@@ -1,14 +1,18 @@
 from click.testing import CliRunner
 
+from malstroem.bluespots import COTQ_landuse_manning_map
 from malstroem.scripts.cli import cli
 from malstroem import io
-from data.fixtures import dtmfile, filledfile, flowdirnoflatsfile, depthsfile, labeledfile, wshedsfile, pourpointsfile, nodesfile, initvolsfile, finalvolsfile, hypsfile, precipraster_byte_file, precipraster_float_file
+from data.fixtures import dtmfile, landusefile, filledfile, flowdirnoflatsfile, depthsfile, labeledfile, wshedsfile, pourpointsfile, nodesfile, initvolsfile, finalvolsfile, hypsfile, precipraster_byte_file, precipraster_float_file
 import numpy as np
 import os
 import pytest
 
 
 def test_complete(tmpdir):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output_complete')
+    os.makedirs(output_dir, exist_ok=True)
+
     runner = CliRunner()
     result = runner.invoke(cli, ['complete',
                                  '-mm', 100,
@@ -17,6 +21,19 @@ def test_complete(tmpdir):
                                  '-dem', dtmfile,
                                  '-outdir', str(tmpdir)])
     assert result.exit_code == 0, result.output
+
+     # --- Copy outputs for comparison ---
+    import shutil
+    for filename in [
+        'filled.tif', 'flowdir.tif', 'bs_depths.tif',
+        'bluespots.tif', 'watersheds.tif',
+        'finaldepths.tif', 'finalbluespots.tif',
+        'malstroem.gpkg'
+    ]:
+        src = str(tmpdir.join(filename))
+        if os.path.isfile(src):
+            shutil.copy(src, os.path.join(output_dir, filename))
+
     assert os.path.isfile(str(tmpdir.join('filled.tif')))
 
     r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
@@ -31,6 +48,68 @@ def test_complete(tmpdir):
     v = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalbluespots')
     data = v.read_geojson_features()
     assert len(data) == 500, result.output
+
+    print(f"\nOutputs saved to: {output_dir}")
+
+
+def test_complete_with_landuse(tmpdir):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output_complete_with_landuse')
+    os.makedirs(output_dir, exist_ok=True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ['complete',
+                                 '-mm', 100,
+                                 '-zresolution', 0.1,
+                                 '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
+                                 '-dem', dtmfile,
+                                 '-landuse', landusefile,
+                                 '-outdir', str(tmpdir)])
+
+    assert result.exit_code == 0, result.output
+
+    # --- Copy outputs for comparison ---
+    import shutil
+    for filename in [
+        'filled.tif', 'flowdir.tif', 'bs_depths.tif',
+        'bluespots.tif', 'watersheds.tif',
+        'bluespot_manning.tif', 'watershed_manning.tif',
+        'finaldepths.tif', 'finalbluespots.tif',
+        'malstroem.gpkg'
+    ]:
+        src = str(tmpdir.join(filename))
+        if os.path.isfile(src):
+            shutil.copy(src, os.path.join(output_dir, filename))
+
+    # --- Manning rasters should be produced ---
+    assert os.path.isfile(str(tmpdir.join('bluespot_manning.tif'))), "Bluespot Manning raster not written"
+    assert os.path.isfile(str(tmpdir.join('watershed_manning.tif'))), "Watershed Manning raster not written"
+
+    bluespot_manning = io.RasterReader(str(tmpdir.join('bluespot_manning.tif'))).read()
+    watershed_manning = io.RasterReader(str(tmpdir.join('watershed_manning.tif'))).read()
+
+    max_expected = max(COTQ_landuse_manning_map().values())
+    assert bluespot_manning.min() >= 0.0
+    assert bluespot_manning.max() <= max_expected + 1e-10
+    assert (bluespot_manning > 0).any(), "All bluespot Manning values are zero"
+    assert (watershed_manning > 0).any(), "All watershed Manning values are zero"
+
+    # --- Bluespots count unchanged (Manning affects volumes, not bluespot detection) ---
+    r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
+    data = r.read()
+    assert np.max(data) == 486, result.output
+
+    # --- Node count unchanged ---
+    v = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalstate')
+    data = v.read_geojson_features()
+    assert len(data) == 544, result.output
+
+    # --- Manning retention reduces water volume so fewer bluespots should be filled ---
+    v = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalbluespots')
+    data = v.read_geojson_features()
+    assert len(data) <= 500, \
+        f"Expected fewer finalbluespots with Manning retention, got {len(data)}"
+
+    print(f"\nOutputs saved to: {output_dir}")
 
 
 def test_complete_nofilter(tmpdir):

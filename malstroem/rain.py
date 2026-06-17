@@ -19,6 +19,38 @@ from .network import Network
 from .algorithms import label
 import logging
 
+def manning_to_depression_storage(manning_n):
+    """Return depression storage depth (mm) for a given Manning coefficient.
+
+    Values based on TR-55 (USDA) and SWMM literature.
+    Manning n is used as a proxy for surface roughness and vegetation cover.
+
+    Parameters
+    ----------
+    manning_n : float
+        Manning roughness coefficient.
+
+    Returns
+    -------
+    float
+        Depression storage depth in mm.
+    """
+    # Lookup table: (manning_n_threshold, ds_mm)
+    # Sorted ascending — first threshold exceeded gives the ds value
+    table = [
+        (0.005, 0.0),   # Open water
+        (0.02,  1.0),   # Bare soil / rock
+        (0.05,  1.5),   # Impervious urban (roads, dense built)
+        (0.08,  2.5),   # Low/medium density urban
+        (0.15,  4.0),   # Sparse vegetation
+        (0.25,  6.0),   # Wetlands
+        (0.35,  8.0),   # Pasture / low vegetation
+        (0.40,  10.0),  # Shrub / forest
+    ]
+    for threshold, ds in table:
+        if manning_n <= threshold:
+            return ds
+    return 12.0  # Dense forest / max vegetation
 
 class SimpleVolumeTool(object):
     """Calculates water volume for each watershed for a simple rain event of x mm on each cell
@@ -67,8 +99,14 @@ class SimpleVolumeTool(object):
         for node in all_nodes:
             props = node["properties"]
             area = float(props['wshed_area'])
-            wshed_water_vol = area * self.rainmm * 0.001
-            props[self.output_volume_attribute] = wshed_water_vol  # Water vol from local catchment
+            manning_n = float(props.get('wshed_manning', 0.0))
+
+            # Depression storage threshold: rainfall below ds produces no runoff
+            ds = manning_to_depression_storage(manning_n)
+            effective_rain_mm = max(0.0, self.rainmm - ds)
+
+            effective_wshed_water_vol = area * effective_rain_mm * 0.001
+            props[self.output_volume_attribute] = effective_wshed_water_vol  # Water vol from local catchment
 
         self.logger.info("Writing output")
         self.output_volumedata.write_geojson_features(all_nodes)

@@ -3,6 +3,7 @@ from malstroem import io
 
 # raster
 dtmfile = 'tests/data/dtm.tif'
+landusefile = 'tests/data/landuse_synthetic.tif'
 filledfile = 'tests/data/filled.tif'
 depthsfile = 'tests/data/depths.tif'
 fillednoflatsfile = 'tests/data/filled_no_flats.tif'

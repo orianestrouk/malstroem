@@ -22,7 +22,7 @@ import click
 import click_log
 
 from malstroem import io
-from malstroem.bluespots import filterbluespots, assemble_pourpoints
+from malstroem.bluespots import COTQ_landuse_manning_map, filterbluespots, assemble_pourpoints, ManningTool
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
 from malstroem.algorithms import label, flow, fill
@@ -142,6 +142,36 @@ def process_pourpoints(bluespots, depths, watersheds, dem, accum, out, format, l
 
     feature_collection = dict(type="FeatureCollection", features=pour_points)
     pourpnt_writer.write_geojson_features(feature_collection)
+
+@click.command('manning')
+@click.option('-landuse', required=True, type=click.Path(exists=True), help='Landuse raster file')
+@click.option('-bluespots', required=True, type=click.Path(exists=True), help='Bluespot label raster')
+@click.option('-watersheds', required=True, type=click.Path(exists=True), help='Watershed label raster')
+@click.option('-out_bluespot', required=True, type=click.Path(exists=False), help='Output raster for bluespot Manning values')
+@click.option('-out_watershed', required=True, type=click.Path(exists=False), help='Output raster for watershed Manning values')
+@click.option('-default', type=float, default=0.0, show_default=True, help='Default Manning coefficient for unmapped landuse codes')
+@click_log.simple_verbosity_option()
+def process_manning(landuse, bluespots, watersheds, out_bluespot, out_watershed, default):
+    """Calculate Manning rasters for bluespots and watersheds."""
+    manning_map = COTQ_landuse_manning_map()
+
+    landuse_reader = io.RasterReader(landuse)
+    bluespot_reader = io.RasterReader(bluespots)
+    watershed_reader = io.RasterReader(watersheds)
+
+    bluespot_writer = io.RasterWriter(out_bluespot, bluespot_reader.transform, bluespot_reader.crs, 0)
+    watershed_writer = io.RasterWriter(out_watershed, watershed_reader.transform, watershed_reader.crs, 0)
+
+    tool = ManningTool(
+        input_landuse=landuse_reader,
+        input_bluespot_labels=bluespot_reader,
+        input_watershed_labels=watershed_reader,
+        manning_map=manning_map,
+        default_value=default,
+        output_bluespot_manning_raster=bluespot_writer,
+        output_watershed_manning_raster=watershed_writer
+    )
+    tool.process()
 
 
 @click.command('polys')

@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 @click.option('-vector', is_flag=True, help='Vectorize bluespots and watersheds')
 @click.option('-filter', help='Filter bluespots by area, maximum depth and volume. Format: '
                                '"area > 20.5 and (maxdepth > 0.05 or volume > 2.5)"')
+@click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing COTQ land use codes')
 @click_log.simple_verbosity_option()
-def process_all(dem, outdir, accum, filter, mm, zresolution, vector):
+def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
     """Quick option to run all processes.
 
     \b
@@ -101,14 +102,36 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector):
     )
     bluespot_tool.process()
 
+    if landuse:
+        logger.info("Calculating Manning rasters from landuse")
+        landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
+        bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
+        watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
+
+        bluespot_manning_writer = io.RasterWriter(os.path.join(outdir, 'bluespot_manning.tif'), tr, crs, 0)
+        watershed_manning_writer = io.RasterWriter(os.path.join(outdir, 'watershed_manning.tif'), tr, crs, 0)
+
+        manning_tool = bluespots.ManningTool(
+            input_landuse=landuse_reader,
+            input_bluespot_labels=bluespot_labels_reader,
+            input_watershed_labels=watershed_labels_reader,
+            manning_map=bluespots.COTQ_landuse_manning_map(),
+            default_value=0.3,
+            output_bluespot_manning_raster=bluespot_manning_writer,
+            output_watershed_manning_raster=watershed_manning_writer
+        )
+        manning_tool.process()
+
     # Process pourpoints
     pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
     flowdir_reader = io.RasterReader(flowdir_writer.filepath)
+    watershed_manning_reader = io.RasterReader(watershed_manning_writer.filepath) if landuse else None
+    bluespot_manning_reader = io.RasterReader(bluespot_manning_writer.filepath) if landuse else None
     nodes_writer = io.VectorWriter(ogr_drv, outvector, 'nodes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)
     streams_writer = io.VectorWriter(ogr_drv, outvector, 'streams', None, ogr.wkbLineString, crs, dsco=ogr_dsco, lco = ogr_lco)
 
-    stream_tool = streams.StreamTool(pourpoints_reader, bluespot_reader, flowdir_reader, nodes_writer, streams_writer)
+    stream_tool = streams.StreamTool(pourpoints_reader, bluespot_reader, flowdir_reader, nodes_writer, streams_writer, watershed_manning_reader, bluespot_manning_reader)
     stream_tool.process()
 
     # Calculate volumes

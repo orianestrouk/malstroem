@@ -88,6 +88,130 @@ def assemble_pourpoints(transform, pp_pix, bluespot_stats, watershed_stats):
     return pour_points
 
 
+def landuse_to_manning(landuse, manning_map, default_value=0.0):
+    """Convert landuse raster to Manning values.
+
+    Parameters
+    ----------
+    landuse : array-like
+        Raster of land-use codes.
+    manning_map : dict
+        Mapping of land-use codes to Manning's n values.
+    default_value : float, optional
+        Manning's n value for codes not found in the mapping. Default is 0.0.
+
+    Returns
+    -------
+    np.ndarray
+        Array of Manning's n values with the same shape as `landuse`.
+    """
+    landuse_arr = np.asarray(landuse)
+    manning = np.full(landuse_arr.shape, float(default_value), dtype=np.float64)
+
+    for code, value in manning_map.items():
+        mask = np.isclose(landuse_arr, float(code))
+        manning[mask] = float(value)
+
+    return manning
+
+def COTQ_landuse_manning_map():
+    """Return a mapping between the land-use codes of the COTQ dataset and Manning's coefficients,
+      as suggested by https://baharmon.github.io/hydrology-in-grass.
+
+    Each class in the COTQ dataset is associated with a class in the NLCD dataset.
+
+    """
+    return {
+        1: 0.0404,   # Artificialisé dense -> Developed, High Intensity
+        3: 0.36,     # Couvert arboré -> Deciduous Forest
+        4: 0.4,      # Végétation basse -> Shrub/Scrub
+        5: 0.0113,   # Terre -> Barren Land
+        6: 0.0113,   # Roche -> Barren Land
+        7: 0.0404,   # Route -> Developed, High Intensity
+        8: 0.0678,   # Artificialisé -> Developed, Low/Medium Intensity
+        9: 0.001,    # Eau -> Open Water
+        10: 0.1825,  # Milieu humide potentiel -> Emergent Herbaceous Wetlands
+        11: 0.325,   # Terre avec végétation basse -> Pasture/Hay
+        12: 0.4      # Roche avec végétation basse -> Shrub/Scrub
+    }
+
+
+def label_mean_raster(labels, values, background=0):
+    """Build a raster where each label cell receives the mean of values within its label."""
+    labels = np.asarray(labels, dtype=np.int64)
+    values = np.asarray(values, dtype=np.float64)
+    if labels.shape != values.shape:
+        raise ValueError("labels and values must have the same shape")
+
+    flattened_labels = labels.ravel()
+    flattened_values = values.ravel()
+    nlabels = int(flattened_labels.max())
+
+    sum_by_label = np.bincount(flattened_labels, weights=flattened_values, minlength=nlabels + 1)
+    count_by_label = np.bincount(flattened_labels, minlength=nlabels + 1)
+    means = np.zeros(nlabels + 1, dtype=np.float64)
+    valid = count_by_label > 0
+    means[valid] = sum_by_label[valid] / count_by_label[valid]
+    means[background] = 0.0
+
+    return label.set_label_to_value(labels, means)
+
+
+class ManningTool(object):
+    """Compute Manning coefficients for bluespot and watershed label rasters.
+
+    Parameters
+    ----------
+    input_landuse : rasterreader
+        Landuse raster used to derive Manning coefficients.
+    input_bluespot_labels : rasterreader
+        Bluespot label raster.
+    input_watershed_labels : rasterreader
+        Watershed label raster.
+    manning_map : dict
+        Mapping from landuse code to Manning coefficient.
+    default_value : float
+        Manning coefficient for codes not found in the mapping.
+    output_bluespot_manning_raster : rasterwriter
+        Output raster for bluespot Manning values.
+    output_watershed_manning_raster : rasterwriter
+        Output raster for watershed Manning values.
+    """
+
+    def __init__(self, input_landuse, input_bluespot_labels, input_watershed_labels,
+                 manning_map, default_value,
+                 output_bluespot_manning_raster, output_watershed_manning_raster):
+        self.input_landuse = input_landuse
+        self.input_bluespot_labels = input_bluespot_labels
+        self.input_watershed_labels = input_watershed_labels
+        self.manning_map = manning_map
+        self.default_value = default_value
+        self.output_bluespot_manning_raster = output_bluespot_manning_raster
+        self.output_watershed_manning_raster = output_watershed_manning_raster
+
+        self.logger = logging.getLogger(__name__)
+
+    def process(self):
+        """Compute Manning rasters."""
+        self.logger.info("Reading landuse and label rasters")
+        landuse = self.input_landuse.read()
+        bluespot_labels = self.input_bluespot_labels.read()
+        watershed_labels = self.input_watershed_labels.read()
+
+        if landuse.shape != bluespot_labels.shape or landuse.shape != watershed_labels.shape:
+            raise ValueError("Input rasters must have the same shape")
+
+        manning_raster = landuse_to_manning(landuse, self.manning_map, self.default_value)
+
+        self.logger.info("Calculating bluespot Manning raster")
+        bluespot_manning = label_mean_raster(bluespot_labels, manning_raster)
+        self.output_bluespot_manning_raster.write(bluespot_manning)
+
+        self.logger.info("Calculating watershed Manning raster")
+        watershed_manning = label_mean_raster(watershed_labels, manning_raster)
+        self.output_watershed_manning_raster.write(watershed_manning)
+
+
 class BluespotTool(object):
     """Process bluespot and watersheds.
 

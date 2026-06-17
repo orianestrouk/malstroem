@@ -35,16 +35,22 @@ class StreamTool(object):
         Writes resulting nodes
     output_streams : vectorwriter, optional
         Writes streams
+    input_watershed_manning : rasterreader, optional
+        Raster with Manning coefficients for watersheds.
+    input_bluespot_manning : rasterreader, optional
+        Raster with Manning coefficients for bluespots.
     """
 
     def __init__(self, input_pourpoints, input_bluespots, input_flowdir,
-                 output_nodes, output_streams=None):
+                 output_nodes, output_streams=None, input_watershed_manning=None, input_bluespot_manning=None):
         self.input_pourpoints = input_pourpoints
         self.input_bluespots = input_bluespots
         self.input_flowdir = input_flowdir
 
         self.output_nodes = output_nodes
         self.output_streams = output_streams
+        self.input_watershed_manning = input_watershed_manning
+        self.input_bluespot_manning = input_bluespot_manning
 
         self.logger = logging.getLogger(__name__)
 
@@ -64,6 +70,10 @@ class StreamTool(object):
         flowdir = self.input_flowdir.read()
         labeled_bluespots = self.input_bluespots.read()
         pourpoints = self.input_pourpoints.read_geojson_features()
+
+        # Read Manning raster if provided
+        watershed_manning = self.input_watershed_manning.read() if self.input_watershed_manning else None
+        bluespot_manning = self.input_bluespot_manning.read() if self.input_bluespot_manning else None
 
         pourpoints_pix = [(pp['properties']['cell_row'], pp['properties']['cell_col']) for pp in pourpoints]
 
@@ -90,6 +100,8 @@ class StreamTool(object):
             props['bspot_area'] = 0.0
             props['bspot_vol'] = 0.0
             props['wshed_area'] = 0.0
+            props['wshed_manning'] = 0.0  # default value
+            props['bluespot_manning'] = 0.0  # default value
 
             # Copy info from pourpoint if present
             ppoint = pp_index.get(n['id'], None)
@@ -98,6 +110,16 @@ class StreamTool(object):
                 props['bspot_area'] = ppoint['properties']['bspot_area']
                 props['bspot_vol'] = ppoint['properties']['bspot_vol']
                 props['wshed_area'] = ppoint['properties']['wshed_area']
+
+            # Read Manning value at the pourpoint pixel
+            if watershed_manning is not None:
+                row = props['cell_row']
+                col = props['cell_col']
+                props['wshed_manning'] = float(watershed_manning[row, col])
+            if bluespot_manning is not None:
+                row = props['cell_row']
+                col = props['cell_col']
+                props['bluespot_manning'] = float(bluespot_manning[row, col])
 
             # Geometry
             coord = transform_cell_to_world(n['pix'], transform)
