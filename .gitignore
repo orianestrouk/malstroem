@@ -106,3 +106,8 @@ ENV/
 
 # vscode
 .vscode
+
+# Test outputs (generated, not source data)
+tests/output_complete/
+tests/output_complete_with_landuse/
+tests/output_manning_test/
