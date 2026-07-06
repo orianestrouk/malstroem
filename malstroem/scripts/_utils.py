@@ -12,6 +12,7 @@
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
 
+from osgeo import gdal
 
 def check_filter(filter):
     # TODO: Stupid check mechanism. Could be done better
@@ -38,3 +39,50 @@ def parse_filter(filter):
         filter = 'lambda stats: {}'.format(filter)
         filter_function = eval(filter)
     return filter_function
+
+
+def rasterize_sumps(input_sumps, reference_transform, reference_shape, crs,
+                    output_raster):
+    """Rasterize a sump (puisard) point vector layer into a capacity array.
+
+    Parameters
+    ----------
+    input_sumps : VectorReader
+        Point vector layer with sump locations.
+    reference_transform : sequence of six numbers
+        GDAL style affine transform aligned with the reference raster.
+    reference_shape : tuple
+        (rows, cols) aligned with the reference raster.
+    crs : str
+        WKT representation of the CRS.
+    output_raster : RasterWriter
+        Writes the sump capacity array to disk.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape `reference_shape` with sump capacity values, 0 elsewhere.
+    """
+    rows, cols = reference_shape
+
+    driver = gdal.GetDriverByName('MEM')
+    target_ds = driver.Create('', cols, rows, 1, gdal.GDT_Float64)
+    target_ds.SetGeoTransform(reference_transform)
+    if crs:
+        target_ds.SetProjection(crs)
+
+    band = target_ds.GetRasterBand(1)
+    band.SetNoDataValue(0)
+    band.Fill(0)
+
+    gdal.RasterizeLayer(
+        target_ds, [1], input_sumps.ogr_layer,
+        options=["ATTRIBUTE=capacity"]
+    )
+
+    result = band.ReadAsArray()
+    target_ds = None
+
+    output_raster.write(result)
+
+    return result

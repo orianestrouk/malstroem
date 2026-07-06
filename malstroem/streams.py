@@ -39,10 +39,14 @@ class StreamTool(object):
         Raster with Manning coefficients for watersheds.
     input_bluespot_manning : rasterreader, optional
         Raster with Manning coefficients for bluespots.
+    input_drainage : vectorreader, optional
+        Drainage stats per bluespot (output of bluespot_drainage_io),
+        indexed by bspot_id. Attaches drain_volumes and drain_capacity_curve
+        to each pourpoint node.
     """
 
     def __init__(self, input_pourpoints, input_bluespots, input_flowdir,
-                 output_nodes, output_streams=None, input_watershed_manning=None, input_bluespot_manning=None):
+                 output_nodes, output_streams=None, input_watershed_manning=None, input_bluespot_manning=None, input_drainage=None):
         self.input_pourpoints = input_pourpoints
         self.input_bluespots = input_bluespots
         self.input_flowdir = input_flowdir
@@ -51,6 +55,7 @@ class StreamTool(object):
         self.output_streams = output_streams
         self.input_watershed_manning = input_watershed_manning
         self.input_bluespot_manning = input_bluespot_manning
+        self.input_drainage = input_drainage
 
         self.logger = logging.getLogger(__name__)
 
@@ -74,6 +79,14 @@ class StreamTool(object):
         # Read Manning raster if provided
         watershed_manning = self.input_watershed_manning.read() if self.input_watershed_manning else None
         bluespot_manning = self.input_bluespot_manning.read() if self.input_bluespot_manning else None
+
+        # Index drainage stats by bspot_id for quick lookup
+        drainage_index = {}
+        if self.input_drainage is not None:
+            for f in self.input_drainage.read_geojson_features():
+                bsid = f['properties'].get('bspot_id')
+                if bsid is not None:
+                    drainage_index[bsid] = f['properties']
 
         pourpoints_pix = [(pp['properties']['cell_row'], pp['properties']['cell_col']) for pp in pourpoints]
 
@@ -120,6 +133,13 @@ class StreamTool(object):
                 row = props['cell_row']
                 col = props['cell_col']
                 props['bluespot_manning'] = float(bluespot_manning[row, col])
+
+             # Attach drainage curve if available for this bluespot
+            bsid = props['bspot_id']
+            if bsid in drainage_index:
+                drain_props = drainage_index[bsid]
+                props['drain_volumes'] = drain_props.get('drain_volumes', '')
+                props['drain_capacity_curve'] = drain_props.get('drain_capacity_curve', '')
 
             # Geometry
             coord = transform_cell_to_world(n['pix'], transform)

@@ -18,6 +18,7 @@ import click
 import click_log
 
 from malstroem import dem as demtool, bluespots, io, streams, rain as raintool, network, hyps, approx
+from malstroem.drainage import COTQ_landuse_diffuse_rate_map, bluespot_drainage_io
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
 from osgeo import ogr, osr
@@ -36,8 +37,15 @@ logger = logging.getLogger(__name__)
 @click.option('-filter', help='Filter bluespots by area, maximum depth and volume. Format: '
                                '"area > 20.5 and (maxdepth > 0.05 or volume > 2.5)"')
 @click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing COTQ land use codes')
+@click.option('-infiltration_method',
+              type=click.Choice(['none', 'initial_abstraction_watershed'], case_sensitive=False),
+              default='none',
+              help='Method used to account for infiltration/abstraction')
+@click.option('-sumps', type=click.Path(exists=True), help='Sump point vector file with a flow capacity attribute')
+@click.option('-simulation_duration_s', type=float, default=3600.0, show_default=True, help='Duration of the rain event in seconds.')
+@click.option('-allow_initial_spillover', type=click.Choice(['YES', 'NO'], case_sensitive=False), default='YES', help='Instantly spill over water volumes exceeding the bluespot max capacity before drainage calculations.')
 @click_log.simple_verbosity_option()
-def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
+def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, infiltration_method, sumps, simulation_duration_s, allow_initial_spillover):
     """Quick option to run all processes.
 
     \b
@@ -48,6 +56,27 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
     if not os.path.isdir(outdir) or not os.path.exists(outdir) or os.listdir(outdir):
         logger.error("outdir isn't an empty directory")
         return 1
+    
+    # Check that landuse is provided if infiltration method is initial abstraction watershed
+    if infiltration_method.lower() == "initial_abstraction_watershed" and not landuse:
+        logger.error("landuse must be provided when using initial_abstraction_watershed")
+        return 1
+
+    # Check if explicitly requested (YES or NO) sumps must be active
+    # Fetch the context directly inside the method body securely
+    ctx = click.get_current_context()
+
+    # Check if the user explicitly provided the parameter (CLI option or environment variable)
+    param_source = ctx.get_parameter_source('allow_initial_spillover')
+    is_explicitly_set = param_source not in (click.core.ParameterSource.DEFAULT, None)
+
+    # Throw error if explicitly requested (YES or NO) but sumps are not active
+    if is_explicitly_set and not sumps:
+        logger.error("-allow_initial_spillover can only be set when a -sumps file is provided.")
+        return 1
+
+    # Convert to python boolean
+    initial_spillover_bool = (allow_initial_spillover.upper() == 'YES')
 
     outvector = os.path.join(outdir, 'malstroem.gpkg')
     ogr_drv = 'gpkg'
@@ -68,7 +97,11 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
     logger.info('   zresolution: {}m'.format(zresolution))
     logger.info('   accum: {}'.format(accum))
     logger.info('   filter: {}'.format(filter))
-
+    logger.info('   landuse: {}'.format(landuse))
+    logger.info('   sumps: {}'.format(sumps))
+    logger.info('   infiltration_method: {}'.format(infiltration_method))
+    logger.info('   simulation_duration_s: {}s'.format(simulation_duration_s))
+    logger.info('   allow_initial_spillover: {}'.format(allow_initial_spillover))
     # Process DEM
     filled_writer = io.RasterWriter(os.path.join(outdir, 'filled.tif'), tr, crs, nodatasubst)
     flowdir_writer = io.RasterWriter(os.path.join(outdir, 'flowdir.tif'), tr, crs)
@@ -102,7 +135,7 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
     )
     bluespot_tool.process()
 
-    if landuse:
+    if infiltration_method.lower() == "initial_abstraction_watershed":
         logger.info("Calculating Manning rasters from landuse")
         landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
         bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
@@ -122,16 +155,53 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
         )
         manning_tool.process()
 
+    # Hypsometry (moved earlier, needed by drainage)
+    bluespot_reader = io.RasterReader(labeled_writer.filepath)
+    pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
+    hyps_writer = io.VectorWriter(ogr_drv, outvector, "hypsometry", None, ogr.wkbNone, dem_reader.crs)
+    hyps.bluespot_hypsometry_io(bluespot_reader, dem_reader, pourpoints_reader, zresolution, hyps_writer)
+
+    # Drainage (if sumps provided, landuse is optional)
+    drainage_reader = None
+    if sumps:
+        if landuse:
+            logger.info("Calculating drainage capacity from sumps and landuse")
+            landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
+            diffuse_map = COTQ_landuse_diffuse_rate_map()
+        else:
+            logger.info("Calculating drainage capacity from sumps only (no landuse provided)")
+            landuse_reader = None
+            diffuse_map = None
+
+        sumps_reader = io.VectorReader(sumps)
+        sump_capacity_writer = io.RasterWriter(os.path.join(outdir, 'sump_capacity.tif'), tr, crs, 0)
+        drainage_writer = io.VectorWriter(ogr_drv, outvector, "drainage", None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco=ogr_lco)
+
+        bluespot_drainage_io(
+            bluespots_reader=io.RasterReader(labeled_writer.filepath),
+            dem_reader=dem_reader,
+            sumps_reader=sumps_reader,
+            resolution=zresolution,
+            pourpoints_reader=io.VectorReader(outvector, pourpoint_writer.layername),
+            hyps_reader=io.VectorReader(outvector, "hypsometry"),
+            drainage_writer=drainage_writer,
+            output_sump_capacity_raster=sump_capacity_writer,
+            landuse_reader=landuse_reader,
+            diffuse_rate_map=diffuse_map
+        )
+        drainage_reader = io.VectorReader(outvector, "drainage")
+
     # Process pourpoints
     pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
     flowdir_reader = io.RasterReader(flowdir_writer.filepath)
-    watershed_manning_reader = io.RasterReader(watershed_manning_writer.filepath) if landuse else None
-    bluespot_manning_reader = io.RasterReader(bluespot_manning_writer.filepath) if landuse else None
+    watershed_manning_reader = io.RasterReader(watershed_manning_writer.filepath) if infiltration_method.lower() == "initial_abstraction_watershed" else None
+    bluespot_manning_reader = io.RasterReader(bluespot_manning_writer.filepath) if infiltration_method.lower() == "initial_abstraction_watershed" else None
+
     nodes_writer = io.VectorWriter(ogr_drv, outvector, 'nodes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)
     streams_writer = io.VectorWriter(ogr_drv, outvector, 'streams', None, ogr.wkbLineString, crs, dsco=ogr_dsco, lco = ogr_lco)
 
-    stream_tool = streams.StreamTool(pourpoints_reader, bluespot_reader, flowdir_reader, nodes_writer, streams_writer, watershed_manning_reader, bluespot_manning_reader)
+    stream_tool = streams.StreamTool(pourpoints_reader, bluespot_reader, flowdir_reader, nodes_writer, streams_writer, watershed_manning_reader, bluespot_manning_reader, drainage_reader)
     stream_tool.process()
 
     # Calculate volumes
@@ -143,13 +213,8 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse):
     # Process final state
     volumes_reader = io.VectorReader(outvector, volumes_writer.layername)
     events_writer = io.VectorWriter(ogr_drv, outvector, 'finalstate', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)
-    calculator = network.FinalStateCalculator(volumes_reader, "inputv", events_writer)
+    calculator = network.FinalStateCalculator(volumes_reader, "inputv", events_writer, simulation_duration_s=simulation_duration_s, allow_initial_spillover=initial_spillover_bool)
     calculator.process()
-
-    # Hypsometry
-    pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
-    hyps_writer = io.VectorWriter(ogr_drv, outvector, "hypsometry", None, ogr.wkbNone, dem_reader.crs)
-    hyps.bluespot_hypsometry_io(bluespot_reader, dem_reader, pourpoints_reader, zresolution, hyps_writer)
 
     # Approximation on levels
     finalvols_reader = io.VectorReader(outvector, events_writer.layername)

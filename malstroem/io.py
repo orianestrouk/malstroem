@@ -422,3 +422,8 @@ class VectorReader(object):
         """Resets reader to first record
         """
         self._lyr.ResetReading()
+
+    @property
+    def ogr_layer(self):
+        """The underlying OGR layer object."""
+        return self._lyr

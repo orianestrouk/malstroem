@@ -109,5 +109,10 @@ ENV/
 
 # Test outputs (generated, not source data)
 tests/output_complete/
-tests/output_complete_with_landuse/
+tests/output_complete_sumps_only/
+tests/output_complete_with_initial_abstraction_watershed/
 tests/output_manning_test/
+tests/output_drainage_test/
+
+# QGIS projects to visualize results
+*.qgz
