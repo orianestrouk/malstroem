@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from malstroem import bluespots, io
 from malstroem.algorithms import label
@@ -52,7 +53,11 @@ def test_bluespots(tmpdir):
     assert os.path.isfile(watershed_writer.filepath)
     assert os.path.isfile(labeled_writer.filepath)
 
-def test_manning_tool(tmpdir):
+@pytest.mark.parametrize("infiltration_method,coefficient_map,default_value,expected_max", [
+    ("manning", bluespots.COTQ_landuse_manning_map(), 0.025, 0.4),
+    ("runoff_coefficient", bluespots.COTQ_landuse_runoff_map(), 0.75, 1.0),
+])
+def test_hydrologic_coefficient_tool(tmpdir, infiltration_method, coefficient_map, default_value, expected_max):
     # --- Prerequisite: run BluespotTool to get label rasters ---
     flowdir_reader = io.RasterReader(flowdirnoflatsfile)
     dem_reader = io.RasterReader(dtmfile)
@@ -86,8 +91,8 @@ def test_manning_tool(tmpdir):
     cotq_codes = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # COTQ codes
 
     n_patches = len(cotq_codes)
-    patch_rows = int(np.ceil(np.sqrt(n_patches))) 
-    patch_cols = int(np.ceil(n_patches / patch_rows))  
+    patch_rows = int(np.ceil(np.sqrt(n_patches)))
+    patch_cols = int(np.ceil(n_patches / patch_rows))
 
     patch_height = rows // patch_rows
     patch_width = cols // patch_cols
@@ -105,51 +110,51 @@ def test_manning_tool(tmpdir):
     landuse_reader = NumpyRasterReader(landuse_array, dem_reader.transform)
 
     # --- Save synthetic landuse for inspection ---
-    output_dir = os.path.join(os.path.dirname(__file__), 'output_manning_test')
+    output_dir = os.path.join(os.path.dirname(__file__), f'output_{infiltration_method}_test')
     os.makedirs(output_dir, exist_ok=True)
 
     landuse_out = io.RasterWriter(os.path.join(output_dir, 'landuse_synthetic.tif'), dem_reader.transform, dem_reader.crs, 0)
     landuse_out.write(landuse_array)
 
-    # --- ManningTool ---
+    # --- HydrologicCoefficientTool ---
     bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
     watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
 
-    bluespot_manning_path = os.path.join(output_dir, 'bluespot_manning.tif')
-    watershed_manning_path = os.path.join(output_dir, 'watershed_manning.tif')
+    bluespot_coeff_path = os.path.join(output_dir, f'bluespot_{infiltration_method}.tif')
+    watershed_coeff_path = os.path.join(output_dir, f'watershed_{infiltration_method}.tif')
 
-    bluespot_manning_writer = io.RasterWriter(bluespot_manning_path, dem_reader.transform, dem_reader.crs, 0)
-    watershed_manning_writer = io.RasterWriter(watershed_manning_path, dem_reader.transform, dem_reader.crs, 0)
+    bluespot_coeff_writer = io.RasterWriter(bluespot_coeff_path, dem_reader.transform, dem_reader.crs, 0)
+    watershed_coeff_writer = io.RasterWriter(watershed_coeff_path, dem_reader.transform, dem_reader.crs, 0)
 
-    manning_tool = bluespots.ManningTool(
+    tool = bluespots.HydrologicCoefficientTool(
+        infiltration_method=infiltration_method,
         input_landuse=landuse_reader,
         input_bluespot_labels=bluespot_labels_reader,
         input_watershed_labels=watershed_labels_reader,
-        manning_map=bluespots.COTQ_landuse_manning_map(),
-        default_value=0.0,
-        output_bluespot_manning_raster=bluespot_manning_writer,
-        output_watershed_manning_raster=watershed_manning_writer
+        coefficient_map=coefficient_map,
+        output_bluespot_raster=bluespot_coeff_writer,
+        output_watershed_raster=watershed_coeff_writer
     )
-    manning_tool.process()
+    tool.process()
 
     # --- Assertions ---
-    assert os.path.isfile(bluespot_manning_path)
-    assert os.path.isfile(watershed_manning_path)
+    assert os.path.isfile(bluespot_coeff_path)
+    assert os.path.isfile(watershed_coeff_path)
 
-    bluespot_manning = io.RasterReader(bluespot_manning_path).read()
-    watershed_manning = io.RasterReader(watershed_manning_path).read()
+    bluespot_coeff = io.RasterReader(bluespot_coeff_path).read()
+    watershed_coeff = io.RasterReader(watershed_coeff_path).read()
 
-    assert bluespot_manning.shape == dem_array.shape
-    assert watershed_manning.shape == dem_array.shape
-    assert bluespot_manning.max() <= 0.4 + 1e-10
-    assert bluespot_manning.min() >= 0.0
-    assert (bluespot_manning > 0).any()
-    assert (watershed_manning > 0).any()
+    assert bluespot_coeff.shape == dem_array.shape
+    assert watershed_coeff.shape == dem_array.shape
+    assert bluespot_coeff.max() <= expected_max + 1e-10
+    assert bluespot_coeff.min() >= 0.0
+    assert (bluespot_coeff > 0).any()
+    assert (watershed_coeff > 0).any()
 
     print(f"\nOutput rasters saved to: {output_dir}")
-    print(f"  landuse_synthetic.tif  — damier de codes COTQ {cotq_codes}")
-    print(f"  bluespot_manning.tif   — Manning moyen par bluespot")
-    print(f"  watershed_manning.tif  — Manning moyen par watershed")
+    print(f"  landuse_synthetic.tif           — damier de codes COTQ {cotq_codes}")
+    print(f"  bluespot_{infiltration_method}.tif   — coefficient moyen par bluespot")
+    print(f"  watershed_{infiltration_method}.tif  — coefficient moyen par watershed")
 
 
 def test_filter(bspotdata, depthsdata):

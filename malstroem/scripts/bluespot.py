@@ -22,7 +22,7 @@ import click
 import click_log
 
 from malstroem import io
-from malstroem.bluespots import COTQ_landuse_manning_map, filterbluespots, assemble_pourpoints, ManningTool
+from malstroem.bluespots import HydrologicCoefficientTool, filterbluespots, assemble_pourpoints, COTQ_landuse_manning_map, COTQ_landuse_runoff_map
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
 from malstroem.algorithms import label, flow, fill
@@ -143,17 +143,24 @@ def process_pourpoints(bluespots, depths, watersheds, dem, accum, out, format, l
     feature_collection = dict(type="FeatureCollection", features=pour_points)
     pourpnt_writer.write_geojson_features(feature_collection)
 
-@click.command('manning')
+@click.command('coefficient')
+@click.option('-infiltration_method',
+              type=click.Choice(['manning', 'runoff_coefficient'], case_sensitive=False),
+              required=True,
+              help='Method used to derive the hydrologic coefficient from landuse. "manning" uses Manning roughness coefficients, "runoff_coefficient" uses runoff coefficients C for the Rational Method.')
 @click.option('-landuse', required=True, type=click.Path(exists=True), help='Landuse raster file')
 @click.option('-bluespots', required=True, type=click.Path(exists=True), help='Bluespot label raster')
 @click.option('-watersheds', required=True, type=click.Path(exists=True), help='Watershed label raster')
-@click.option('-out_bluespot', required=True, type=click.Path(exists=False), help='Output raster for bluespot Manning values')
-@click.option('-out_watershed', required=True, type=click.Path(exists=False), help='Output raster for watershed Manning values')
-@click.option('-default', type=float, default=0.0, show_default=True, help='Default Manning coefficient for unmapped landuse codes')
+@click.option('-out_bluespot', required=True, type=click.Path(exists=False), help='Output raster for bluespot coefficient values')
+@click.option('-out_watershed', required=True, type=click.Path(exists=False), help='Output raster for watershed coefficient values')
+@click.option('-default', type=float, default=None, show_default=True, help='Default coefficient for unmapped landuse codes. If not specified, uses the method-specific default (0.025 for manning, 0.75 for runoff_coefficient)')
 @click_log.simple_verbosity_option()
-def process_manning(landuse, bluespots, watersheds, out_bluespot, out_watershed, default):
-    """Calculate Manning rasters for bluespots and watersheds."""
-    manning_map = COTQ_landuse_manning_map()
+def process_coefficient(infiltration_method, landuse, bluespots, watersheds, out_bluespot, out_watershed, default):
+    """Calculate hydrologic coefficient rasters (Manning or runoff C) for bluespots and watersheds."""
+    if infiltration_method.lower() == 'manning':
+        coefficient_map = COTQ_landuse_manning_map()
+    else:
+        coefficient_map = COTQ_landuse_runoff_map()
 
     landuse_reader = io.RasterReader(landuse)
     bluespot_reader = io.RasterReader(bluespots)
@@ -162,17 +169,16 @@ def process_manning(landuse, bluespots, watersheds, out_bluespot, out_watershed,
     bluespot_writer = io.RasterWriter(out_bluespot, bluespot_reader.transform, bluespot_reader.crs, 0)
     watershed_writer = io.RasterWriter(out_watershed, watershed_reader.transform, watershed_reader.crs, 0)
 
-    tool = ManningTool(
+    tool = HydrologicCoefficientTool(
+        infiltration_method=infiltration_method,
         input_landuse=landuse_reader,
         input_bluespot_labels=bluespot_reader,
         input_watershed_labels=watershed_reader,
-        manning_map=manning_map,
-        default_value=default,
-        output_bluespot_manning_raster=bluespot_writer,
-        output_watershed_manning_raster=watershed_writer
+        coefficient_map=coefficient_map,
+        output_bluespot_raster=bluespot_writer,
+        output_watershed_raster=watershed_writer
     )
     tool.process()
-
 
 @click.command('polys')
 @click.option('-raster', required=True, type=click.Path(exists=True), help='Raster file with IDs (bluespots or watersheds)')

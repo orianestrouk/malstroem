@@ -18,7 +18,7 @@ import click
 import click_log
 
 from malstroem import dem as demtool, bluespots, io, streams, rain as raintool, network, hyps, approx
-from malstroem.drainage import COTQ_landuse_diffuse_rate_map, bluespot_drainage_io
+from malstroem.drainage import bluespot_drainage_io
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
 from osgeo import ogr, osr
@@ -28,6 +28,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 @click.command('complete')
+
 @click.option('-dem', type=click.Path(exists=True), help='DEM raster file. Horisontal and vertical units must be meters')
 @click.option('-outdir', type=click.Path(exists=True), help='Output directory')
 @click.option('-mm', required=True, multiple=False, type=float, help='Rain incident in [mm]')
@@ -38,13 +39,15 @@ logger = logging.getLogger(__name__)
                                '"area > 20.5 and (maxdepth > 0.05 or volume > 2.5)"')
 @click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing COTQ land use codes')
 @click.option('-infiltration_method',
-              type=click.Choice(['none', 'initial_abstraction_watershed'], case_sensitive=False),
+              type=click.Choice(['none', 'manning', 'runoff_coefficient'], case_sensitive=False),
               default='none',
-              help='Method used to account for infiltration/abstraction')
+              help='Method used to account for infiltration. "none" means no infiltration, "manning" means using Manning roughness coefficients, and "runoff_coefficient" means using runoff coefficients C for the Rational Method.')
 @click.option('-sumps', type=click.Path(exists=True), help='Sump point vector file with a flow capacity attribute')
 @click.option('-simulation_duration_s', type=float, default=3600.0, show_default=True, help='Duration of the rain event in seconds.')
 @click.option('-allow_initial_spillover', type=click.Choice(['YES', 'NO'], case_sensitive=False), default='YES', help='Instantly spill over water volumes exceeding the bluespot max capacity before drainage calculations.')
+
 @click_log.simple_verbosity_option()
+
 def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, infiltration_method, sumps, simulation_duration_s, allow_initial_spillover):
     """Quick option to run all processes.
 
@@ -58,8 +61,8 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
         return 1
     
     # Check that landuse is provided if infiltration method is initial abstraction watershed
-    if infiltration_method.lower() == "initial_abstraction_watershed" and not landuse:
-        logger.error("landuse must be provided when using initial_abstraction_watershed")
+    if infiltration_method.lower() != "none" and not landuse:
+        logger.error("landuse must be provided when using infiltration method: {}".format(infiltration_method))
         return 1
 
     # Check if explicitly requested (YES or NO) sumps must be active
@@ -135,25 +138,25 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     )
     bluespot_tool.process()
 
-    if infiltration_method.lower() == "initial_abstraction_watershed":
-        logger.info("Calculating Manning rasters from landuse")
+    if infiltration_method.lower() != "none":
+        logger.info("Calculating {} rasters from landuse".format(infiltration_method))
         landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
         bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
         watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
 
-        bluespot_manning_writer = io.RasterWriter(os.path.join(outdir, 'bluespot_manning.tif'), tr, crs, 0)
-        watershed_manning_writer = io.RasterWriter(os.path.join(outdir, 'watershed_manning.tif'), tr, crs, 0)
+        bluespot_infiltration_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'bluespot_{}.tif'.format(infiltration_method)), tr, crs, 0)
+        watershed_infiltration_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'watershed_{}.tif'.format(infiltration_method)), tr, crs, 0)
 
-        manning_tool = bluespots.ManningTool(
+        hydrologic_tool = bluespots.HydrologicCoefficientTool(
+            infiltration_method=infiltration_method,
             input_landuse=landuse_reader,
             input_bluespot_labels=bluespot_labels_reader,
             input_watershed_labels=watershed_labels_reader,
-            manning_map=bluespots.COTQ_landuse_manning_map(),
-            default_value=0.3,
-            output_bluespot_manning_raster=bluespot_manning_writer,
-            output_watershed_manning_raster=watershed_manning_writer
+            coefficient_map=bluespots.COTQ_landuse_runoff_map() if infiltration_method == "runoff_coefficient" else bluespots.COTQ_landuse_manning_map(),
+            output_bluespot_raster=bluespot_infiltration_coefficient_writer,
+            output_watershed_raster=watershed_infiltration_coefficient_writer
         )
-        manning_tool.process()
+        hydrologic_tool.process()
 
     # Hypsometry (moved earlier, needed by drainage)
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
@@ -161,17 +164,10 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     hyps_writer = io.VectorWriter(ogr_drv, outvector, "hypsometry", None, ogr.wkbNone, dem_reader.crs)
     hyps.bluespot_hypsometry_io(bluespot_reader, dem_reader, pourpoints_reader, zresolution, hyps_writer)
 
-    # Drainage (if sumps provided, landuse is optional)
+# Drainage (sumps only)
     drainage_reader = None
     if sumps:
-        if landuse:
-            logger.info("Calculating drainage capacity from sumps and landuse")
-            landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
-            diffuse_map = COTQ_landuse_diffuse_rate_map()
-        else:
-            logger.info("Calculating drainage capacity from sumps only (no landuse provided)")
-            landuse_reader = None
-            diffuse_map = None
+        logger.info("Calculating drainage capacity from sumps")
 
         sumps_reader = io.VectorReader(sumps)
         sump_capacity_writer = io.RasterWriter(os.path.join(outdir, 'sump_capacity.tif'), tr, crs, 0)
@@ -185,9 +181,7 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
             pourpoints_reader=io.VectorReader(outvector, pourpoint_writer.layername),
             hyps_reader=io.VectorReader(outvector, "hypsometry"),
             drainage_writer=drainage_writer,
-            output_sump_capacity_raster=sump_capacity_writer,
-            landuse_reader=landuse_reader,
-            diffuse_rate_map=diffuse_map
+            output_sump_capacity_raster=sump_capacity_writer
         )
         drainage_reader = io.VectorReader(outvector, "drainage")
 
@@ -195,19 +189,29 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
     flowdir_reader = io.RasterReader(flowdir_writer.filepath)
-    watershed_manning_reader = io.RasterReader(watershed_manning_writer.filepath) if infiltration_method.lower() == "initial_abstraction_watershed" else None
-    bluespot_manning_reader = io.RasterReader(bluespot_manning_writer.filepath) if infiltration_method.lower() == "initial_abstraction_watershed" else None
+    watershed_infiltration_coefficient_reader = io.RasterReader(watershed_infiltration_coefficient_writer.filepath) if infiltration_method.lower() != "none" else None
+    bluespot_infiltration_coefficient_reader = io.RasterReader(bluespot_infiltration_coefficient_writer.filepath) if infiltration_method.lower() != "none" else None
 
     nodes_writer = io.VectorWriter(ogr_drv, outvector, 'nodes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)
     streams_writer = io.VectorWriter(ogr_drv, outvector, 'streams', None, ogr.wkbLineString, crs, dsco=ogr_dsco, lco = ogr_lco)
 
-    stream_tool = streams.StreamTool(pourpoints_reader, bluespot_reader, flowdir_reader, nodes_writer, streams_writer, watershed_manning_reader, bluespot_manning_reader, drainage_reader)
+    stream_tool = streams.StreamTool(
+        input_pourpoints=pourpoints_reader,
+        input_bluespots=bluespot_reader,
+        input_flowdir=flowdir_reader,
+        output_nodes=nodes_writer,
+        output_streams=streams_writer,
+        infiltration_method=infiltration_method,
+        input_watershed_infiltration_coefficient=watershed_infiltration_coefficient_reader,
+        input_bluespot_infiltration_coefficient=bluespot_infiltration_coefficient_reader,
+        input_drainage=drainage_reader
+    )
     stream_tool.process()
 
     # Calculate volumes
     nodes_reader = io.VectorReader(outvector, nodes_writer.layername)
     volumes_writer = io.VectorWriter(ogr_drv, outvector, 'initvolumes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco) 
-    rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, "inputv" ,mm)
+    rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, "inputv" ,mm ,infiltration_method)
     rain_tool.process()
 
     # Process final state

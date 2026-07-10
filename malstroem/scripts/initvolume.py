@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
     callback=lambda c, p, v: getattr(raintool.Unit, v) if v else None, 
     help="Unit of cell values in '-pr' raster")
 @click.option('-bluespots', required=False, type=click.Path(exists=True), help='Bluespots ID file. Required with -pr')    
+@click.option('-infiltration_method',
+              type=click.Choice(['none', 'manning', 'runoff_coefficient'], case_sensitive=False),
+              default='none',
+              help='Method used to account for infiltration. "none" means no infiltration, "manning" means using Manning roughness coefficients, and "runoff_coefficient" means using runoff coefficients C for the Rational Method.')
 @click.option('-out', required=True, help='Output OGR datasource')
 @click.option('-out_layer', default='initvolumes', show_default=True, help='Calculated model input volumes in [m3]')
 @click.option('-out_attribute', default='inputv', show_default=True, help='Name of output attribute')
@@ -45,7 +49,7 @@ logger = logging.getLogger(__name__)
 @click.option('-dsco', multiple=True, type=str, nargs=0, help='OGR datasource creation options. See OGR documentation')
 @click.option('-lco', multiple=True, type=str, nargs=0, help='OGR layer creation options. See OGR documentation')
 @click_log.simple_verbosity_option()
-def process_volumes(nodes, nodes_layer, mm, pr, pr_unit, bluespots, out, out_layer, out_attribute, format, dsco, lco):
+def process_volumes(nodes, nodes_layer, mm, pr, pr_unit, bluespots, infiltration_method, out, out_layer, out_attribute, format, dsco, lco):
     """Set up initial water volumes for each watershed.
 
     The output from this process can be used as input for the finalvolumes calculation.
@@ -73,7 +77,7 @@ def process_volumes(nodes, nodes_layer, mm, pr, pr_unit, bluespots, out, out_lay
 
     if mm:
         logger.info(f"Processing initial volumes using evenly distributed rain event of {mm}mm")
-        rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, out_attribute, mm)
+        rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, out_attribute, mm, infiltration_method)
         rain_tool.process()
     else:
         if not bluespots:

@@ -200,7 +200,7 @@ class Network(object):
                 if current_water_to_drain > bspot_capacity:
                     v_floor = bspot_capacity
                 else:
-                    v_floor = float(drain_volumes[idx]) if idx > 0 else 0.0 # ORIANE : or idx-1 ???
+                    v_floor = float(drain_volumes[idx]) if idx > 0 else 0.0
                 
                 # Water volume available to drain within this specific tier/segment
                 v_available_in_tier = current_water_to_drain - v_floor

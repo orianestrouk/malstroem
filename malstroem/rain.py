@@ -65,6 +65,8 @@ class SimpleVolumeTool(object):
         Name of attribute which calculated water volume is written to
     rainmm : float
         Rain (in mm).
+    infiltration_method : str
+        Infiltration method.
 
     Attributes
     ----------
@@ -76,11 +78,12 @@ class SimpleVolumeTool(object):
         Name of attribute which calculated water volume is written to
     """
 
-    def __init__(self, input_nodes, output_volumedata, output_volume_attribute, rainmm):
+    def __init__(self, input_nodes, output_volumedata, output_volume_attribute, rainmm, infiltration_method):
         self.input_nodes = input_nodes
         self.output_volumedata = output_volumedata
         self.output_volume_attribute = str(output_volume_attribute)
         self.rainmm = float(rainmm)
+        self.infiltration_method = infiltration_method
         self.logger = logging.getLogger(__name__)
 
     def process(self):
@@ -99,11 +102,17 @@ class SimpleVolumeTool(object):
         for node in all_nodes:
             props = node["properties"]
             area = float(props['wshed_area'])
-            manning_n = float(props.get('wshed_manning', 0.0))
+            if self.infiltration_method == "manning":
+                manning_n = float(props.get('wshed_infiltration_coefficient', 0.0))
 
-            # Depression storage threshold: rainfall below ds produces no runoff
-            ds = manning_to_depression_storage(manning_n)
-            effective_rain_mm = max(0.0, self.rainmm - ds)
+                # Depression storage threshold: rainfall below ds produces no runoff
+                ds = manning_to_depression_storage(manning_n)
+                effective_rain_mm = max(0.0, self.rainmm - ds)
+            elif self.infiltration_method == "runoff_coefficient":
+                runoff_coeff = float(props.get('wshed_infiltration_coefficient', 1.0))
+                effective_rain_mm = self.rainmm * runoff_coeff
+            else:
+                effective_rain_mm = self.rainmm
 
             effective_wshed_water_vol = area * effective_rain_mm * 0.001
             props[self.output_volume_attribute] = effective_wshed_water_vol  # Water vol from local catchment

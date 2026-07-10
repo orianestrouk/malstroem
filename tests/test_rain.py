@@ -18,7 +18,7 @@ def test_evenly_distributed(nodesreader, tmp_path):
     volumes_writer = VectorWriter("geojson", str(volumes_file_path), "", None, ogr.wkbPoint, crs)
     attr = "inputvol"
 
-    tool = SimpleVolumeTool(nodesreader, volumes_writer, attr, 10)
+    tool = SimpleVolumeTool(nodesreader, volumes_writer, attr, 10, infiltration_method="none")
     tool.process()
 
     assert volumes_file_path.is_file(), "No file written"

@@ -110,9 +110,11 @@ ENV/
 # Test outputs (generated, not source data)
 tests/output_complete/
 tests/output_complete_sumps_only/
-tests/output_complete_with_initial_abstraction_watershed/
-tests/output_manning_test/
+tests/output_complete_with_manning/
+tests/output_complete_with_runoff_coefficient/
 tests/output_drainage_test/
+tests/output_manning_test/
+tests/output_runoff_coefficient_test/
 
 # QGIS projects to visualize results
 *.qgz

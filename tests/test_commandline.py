@@ -1,6 +1,6 @@
 from click.testing import CliRunner
 
-from malstroem.bluespots import COTQ_landuse_manning_map
+from malstroem.bluespots import COTQ_landuse_manning_map, COTQ_landuse_runoff_map
 from malstroem.scripts.cli import cli
 from malstroem import io
 from data.fixtures import dtmfile, landusefile, sumpsfile, filledfile, flowdirnoflatsfile, depthsfile, labeledfile, wshedsfile, pourpointsfile, nodesfile, initvolsfile, finalvolsfile, hypsfile, precipraster_byte_file, precipraster_float_file
@@ -49,11 +49,25 @@ def test_complete(tmpdir):
     data = v.read_geojson_features()
     assert len(data) == 500, result.output
 
+    # Read the final water depths raster
+    rd = io.RasterReader(str(tmpdir.join('finaldepths.tif')))
+    depth_array = rd.read()
+    
+    # Calculate the total depth sum of all flooded pixels
+    total_depth_sum = float(np.sum(depth_array[depth_array > 0]))
+    
+    # Assert that the baseline precisely matches your QGIS measurement
+    assert total_depth_sum == pytest.approx(2930.395494520912, abs=1e-3), \
+        f"Expected baseline depth sum to be approx 2930.395, got {total_depth_sum}"
+
     print(f"\nOutputs saved to: {output_dir}")
 
-
-def test_complete_with_landuse(tmpdir):
-    output_dir = os.path.join(os.path.dirname(__file__), 'output_complete_with_inital_abstraction_watershed')
+@pytest.mark.parametrize("infiltration_method,coefficient_map_fn,output_dirname", [
+    ("manning", COTQ_landuse_manning_map, 'output_complete_with_manning'),
+    ("runoff_coefficient", COTQ_landuse_runoff_map, 'output_complete_with_runoff_coefficient'),
+])
+def test_complete_with_landuse(tmpdir, infiltration_method, coefficient_map_fn, output_dirname):
+    output_dir = os.path.join(os.path.dirname(__file__), output_dirname)
     os.makedirs(output_dir, exist_ok=True)
 
     runner = CliRunner()
@@ -63,17 +77,20 @@ def test_complete_with_landuse(tmpdir):
                                  '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
                                  '-dem', dtmfile,
                                  '-landuse', landusefile,
-                                 '-infiltration_method', 'initial_abstraction_watershed',
+                                 '-infiltration_method', infiltration_method,
                                  '-outdir', str(tmpdir)])
 
     assert result.exit_code == 0, result.output
+
+    bluespot_raster_name = f'bluespot_{infiltration_method}.tif'
+    watershed_raster_name = f'watershed_{infiltration_method}.tif'
 
     # --- Copy outputs for comparison ---
     import shutil
     for filename in [
         'filled.tif', 'flowdir.tif', 'bs_depths.tif',
         'bluespots.tif', 'watersheds.tif',
-        'bluespot_manning.tif', 'watershed_manning.tif',
+        bluespot_raster_name, watershed_raster_name,
         'finaldepths.tif', 'finalbluespots.tif',
         'malstroem.gpkg'
     ]:
@@ -81,20 +98,22 @@ def test_complete_with_landuse(tmpdir):
         if os.path.isfile(src):
             shutil.copy(src, os.path.join(output_dir, filename))
 
-    # --- Manning rasters should be produced ---
-    assert os.path.isfile(str(tmpdir.join('bluespot_manning.tif'))), "Bluespot Manning raster not written"
-    assert os.path.isfile(str(tmpdir.join('watershed_manning.tif'))), "Watershed Manning raster not written"
+    # --- Coefficient rasters should be produced ---
+    assert os.path.isfile(str(tmpdir.join(bluespot_raster_name))), \
+        f"Bluespot {infiltration_method} raster not written"
+    assert os.path.isfile(str(tmpdir.join(watershed_raster_name))), \
+        f"Watershed {infiltration_method} raster not written"
 
-    bluespot_manning = io.RasterReader(str(tmpdir.join('bluespot_manning.tif'))).read()
-    watershed_manning = io.RasterReader(str(tmpdir.join('watershed_manning.tif'))).read()
+    bluespot_coeff = io.RasterReader(str(tmpdir.join(bluespot_raster_name))).read()
+    watershed_coeff = io.RasterReader(str(tmpdir.join(watershed_raster_name))).read()
 
-    max_expected = max(COTQ_landuse_manning_map().values())
-    assert bluespot_manning.min() >= 0.0
-    assert bluespot_manning.max() <= max_expected + 1e-10
-    assert (bluespot_manning > 0).any(), "All bluespot Manning values are zero"
-    assert (watershed_manning > 0).any(), "All watershed Manning values are zero"
+    max_expected = max(coefficient_map_fn().values())
+    assert bluespot_coeff.min() >= 0.0
+    assert bluespot_coeff.max() <= max_expected + 1e-10
+    assert (bluespot_coeff > 0).any(), f"All bluespot {infiltration_method} values are zero"
+    assert (watershed_coeff > 0).any(), f"All watershed {infiltration_method} values are zero"
 
-    # --- Bluespots count unchanged (Manning affects volumes, not bluespot detection) ---
+    # --- Bluespots count unchanged (infiltration affects volumes, not bluespot detection) ---
     r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
     data = r.read()
     assert np.max(data) == 486, result.output
@@ -104,11 +123,16 @@ def test_complete_with_landuse(tmpdir):
     data = v.read_geojson_features()
     assert len(data) == 544, result.output
 
-    # --- Manning retention reduces water volume so fewer bluespots should be filled ---
-    v = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalbluespots')
-    data = v.read_geojson_features()
-    assert len(data) <= 500, \
-        f"Expected fewer finalbluespots with Manning retention, got {len(data)}"
+    # Read the infiltration scenario water depths raster
+    rd = io.RasterReader(str(tmpdir.join('finaldepths.tif')))
+    depth_array = rd.read()
+    
+    total_depth_sum = float(np.sum(depth_array[depth_array > 0]))
+    
+    # Assert that infiltration successfully retained water, reducing total system volume
+    baseline_depth_sum = 2930.395494520912
+    assert total_depth_sum < baseline_depth_sum, \
+        f"Expected total water volume to decrease with infiltration, but {total_depth_sum} >= {baseline_depth_sum}"
 
     print(f"\nOutputs saved to: {output_dir}")
 
