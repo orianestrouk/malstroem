@@ -19,16 +19,18 @@ logger = logging.getLogger(__name__)
 
 
 def load_coefficient_table(csv_path):
-    """Load a landuse-category correspondence table with uncertainty bounds,
-    keyed by subcategory.
+    """Load a landuse-based hydrologic coefficient lookup table.
 
-    Expects columns: landuse_code, landuse_category, lower_bound,
+    The table associates each landuse code with a set of hydrologic coefficient
+    values representing uncertainty bounds.
+
+    Expected columns: landuse_code, landuse_category, lower_bound,
     default_value, upper_bound.
 
     Parameters
     ----------
     csv_path : str
-        Path to the CSV correspondence table.
+        Path to the tab-separated lookup table.
 
     Returns
     -------
@@ -183,12 +185,8 @@ class HydrologicCoefficientTool(object):
             raise ValueError("Input rasters must have the same shape")
 
         coeff_raster = self._landuse_to_coefficient(landuse)
-        print("CN landuse unique:", np.unique(coeff_raster))
-        print("CN landuse min/max:", coeff_raster.min(), coeff_raster.max())
 
         self.logger.info("Computing watershed aggregated coefficients")
         watershed = label_mean_raster(watershed_labels, coeff_raster)
-        print("CN watershed unique:", np.unique(watershed))
-        print("CN watershed min/max:", watershed.min(), watershed.max())
         self.output_watershed_raster.write(watershed)
 
