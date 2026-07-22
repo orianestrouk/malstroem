@@ -11,6 +11,16 @@
 # You should have received a copy of the GNU General Public License along with this program. If not,
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------------------------
+# Modified by Oriane Strouk (2026) to add optional rainfall-runoff transformation based on various
+# initial abstraction methods.
+#
+# Effective rainfall volumes are computed from total rainfall by accounting for initial abstraction
+# and infiltration losses. The implemented approaches include landuse-based runoff coefficients
+# and the SCS Curve Number method.
+# -------------------------------------------------------------------------------------------------
+
 from __future__ import (absolute_import, division, print_function) #, unicode_literals)
 from enum import Enum
 from builtins import *
@@ -19,38 +29,34 @@ from .network import Network
 from .algorithms import label
 import logging
 
-def manning_to_depression_storage(manning_n):
-    """Return depression storage depth (mm) for a given Manning coefficient.
-
-    Values based on TR-55 (USDA) and SWMM literature.
-    Manning n is used as a proxy for surface roughness and vegetation cover.
+def curve_number_runoff(rain_mm, cn):
+    """Compute effective rainfall using the SCS Curve Number method.
 
     Parameters
     ----------
-    manning_n : float
-        Manning roughness coefficient.
+    rain_mm : float
+        Total rainfall depth [mm].
+    cn : float
+        Curve Number.
 
     Returns
     -------
     float
-        Depression storage depth in mm.
+        Direct runoff depth [mm].
     """
-    # Lookup table: (manning_n_threshold, ds_mm)
-    # Sorted ascending — first threshold exceeded gives the ds value
-    table = [
-        (0.005, 0.0),   # Open water
-        (0.02,  1.0),   # Bare soil / rock
-        (0.05,  1.5),   # Impervious urban (roads, dense built)
-        (0.08,  2.5),   # Low/medium density urban
-        (0.15,  4.0),   # Sparse vegetation
-        (0.25,  6.0),   # Wetlands
-        (0.35,  8.0),   # Pasture / low vegetation
-        (0.40,  10.0),  # Shrub / forest
-    ]
-    for threshold, ds in table:
-        if manning_n <= threshold:
-            return ds
-    return 12.0  # Dense forest / max vegetation
+
+    if cn <= 0 or cn > 100:
+        raise ValueError(f"Curve Number must be between 0 and 100, got {cn}")
+
+    S = 25400.0 / cn - 254.0
+    Ia = 0.2 * S
+
+    if rain_mm <= Ia:
+        return 0.0
+
+    Q = (rain_mm - Ia)**2 / (rain_mm + 0.8 * S)
+
+    return Q
 
 class SimpleVolumeTool(object):
     """Calculates water volume for each watershed for a simple rain event of x mm on each cell
@@ -102,20 +108,32 @@ class SimpleVolumeTool(object):
         for node in all_nodes:
             props = node["properties"]
             area = float(props['wshed_area'])
-            if self.infiltration_method == "manning":
-                manning_n = float(props.get('wshed_infiltration_coefficient', 0.0))
 
-                # Depression storage threshold: rainfall below ds produces no runoff
-                ds = manning_to_depression_storage(manning_n)
-                effective_rain_mm = max(0.0, self.rainmm - ds)
-            elif self.infiltration_method == "runoff_coefficient":
-                runoff_coeff = float(props.get('wshed_infiltration_coefficient', 1.0))
-                effective_rain_mm = self.rainmm * runoff_coeff
-            else:
+        # Added by Oriane Strouk (2026).
+        # ------------------------------
+        # Compute effective rainfall based on infiltration method
+
+            if self.infiltration_method == "none":
                 effective_rain_mm = self.rainmm
+            elif self.infiltration_method == "runoff_coefficient":
+                runoff_coeff = props.get('wshed_infiltration_coefficient')
+                if runoff_coeff is None:
+                    effective_rain_mm = self.rainmm
+                else:
+                    effective_rain_mm = self.rainmm * float(runoff_coeff)
+            elif self.infiltration_method == "curve_number":
+                curve_number = props.get('wshed_infiltration_coefficient')
+                if curve_number is None:
+                    effective_rain_mm = self.rainmm
+                else:
+                    cn = float(curve_number)
+                    effective_rain_mm = curve_number_runoff(self.rainmm, cn)
 
             effective_wshed_water_vol = area * effective_rain_mm * 0.001
             props[self.output_volume_attribute] = effective_wshed_water_vol  # Water vol from local catchment
+
+        # End of added by Oriane Strouk (2026).
+        # ------------------------------
 
         self.logger.info("Writing output")
         self.output_volumedata.write_geojson_features(all_nodes)

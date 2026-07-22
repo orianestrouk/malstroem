@@ -1,0 +1,14 @@
+landuse_code	landuse_category	lower_bound	default_value	upper_bound
+1	Impervious	1.00	1.00	1.00
+2	Commercial centre-ville	0.70	0.90	0.95
+3	Commercial banlieue	0.50	0.60	0.70
+4	Maisons de banlieue	0.25	0.35	0.40
+5	Maisons detachees	0.30	0.40	0.50
+6	Unites jumelees	0.40	0.50	0.60
+7	Maisons de ville	0.60	0.70	0.75
+8	Blocs appartements	0.50	0.60	0.70
+9	Industrielle legere	0.50	0.65	0.80
+10	Industrielle lourde	0.60	0.80	0.90
+11	Parc et Cimetière	0.10	0.18	0.25
+12	Terrain de jeux	0.20	0.28	0.35
+13	Champs	0.10	0.25	0.30

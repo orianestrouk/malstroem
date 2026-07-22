@@ -11,6 +11,15 @@
 # You should have received a copy of the GNU General Public License along with this program. If not,
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------------------------
+# Modified by Oriane Strouk (2026) to add optional dynamic bluespot drainage simulation.
+#
+# Drainage capacity curves derived from bluespot hypsometry are used to simulate water removal over
+# the simulation duration. The drainage process follows a time-dependent mass balance approach and 
+# accounts for variable drainage capacity with water level.
+# -------------------------------------------------------------------------------------------------
+
 from __future__ import (absolute_import, division, print_function) #, unicode_literals)
 from builtins import *
 import logging
@@ -33,8 +42,8 @@ class FinalStateCalculator(object):
     simulation_duration_s : float, optional
         Duration of the rain event in seconds. Used to calculate drained volume from drainage capacity.
     allow_initial_spillover : bool, optional
-        If True, water above bspot_capacity spills over instantly and cannot be drained.
-        If False, water above bspot_capacity can be drained at peak drainage capacity.
+        If True, water above bspot_capacity spills over instantly and cannot be drained. Conservative flash-flood assumption.
+        If False, water above bspot_capacity can be drained at peak drainage capacity. Continuous mass-balance assumption.
     """
 
     def __init__(self, input_nodes, input_volume_attribute, output_finalstatedata,
@@ -155,6 +164,9 @@ class Network(object):
 
         total_water_vol = wshed_water_vol + upstream_volume
 
+        # Added by Oriane Strouk (2026).
+        # ------------------------------
+
         # Bluespot fill before drainage (used to determine initial capacity index)
         bspot_filled_vol_initial = min(total_water_vol, bspot_capacity)
 
@@ -248,13 +260,16 @@ class Network(object):
         drain_capacity_str = "|".join(f"{x:.4f}" for x in capacity_history) if capacity_history else "0.0"
         drainv_str = "|".join(f"{x:.2f}" for x in drained_volume_history) if drained_volume_history else "0.0"
 
+        # End of added by Oriane Strouk (2026).
+        # -------------------------------------
+
         event = dict(nodeid=node['nodeid'])
         event[volume_attribute] = wshed_water_vol
         event['upstreamv'] = upstream_volume
         event['spillv'] = spillover
         event['v'] = bspot_filled_vol
         event['drain_capacity'] = drain_capacity_str  # m3/s at each step
-        event['drainv'] = drainv_str            # m3 drained over simulation duration at each step         
+        event['drainv'] = drainv_str            # m3 drained over simulation duration at each step
         event['pctv'] = None if not bspot_capacity else 100.0 * bspot_filled_vol / bspot_capacity
         self._node_rain_values[node_id] = event
 

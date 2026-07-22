@@ -11,6 +11,12 @@
 # You should have received a copy of the GNU General Public License along with this program. If not,
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------------------------
+# Modified by Oriane Strouk (2026) to propagate initial abstraction coefficients and drainage curves
+# to pourpoint nodes.
+# -------------------------------------------------------------------------------------------------
+
 from __future__ import (absolute_import, division, print_function) #, unicode_literals)
 from builtins import *
 
@@ -18,6 +24,7 @@ from malstroem.vector import transform_cell_to_world
 from malstroem.algorithms import net
 
 import logging
+import numpy as np
 
 
 class StreamTool(object):
@@ -35,14 +42,11 @@ class StreamTool(object):
         Writes resulting nodes
     output_streams : vectorwriter, optional
         Writes streams
-    infiltration_method : str, optional
-        Method used to derive input_watershed_coefficient / input_bluespot_coefficient
-        ("manning" or "runoff_coefficient"). Stored on each node for downstream
-        interpretation. Default "none".
-    input_watershed_coefficient : rasterreader, optional
+    initial_abstraction_method : str, optional
+        Method used to derive input_watershed_initial_abstraction_coefficient ("runoff_coefficient" or "curve_number").
+        Stored on each node for downstream interpretation. Default "none".
+    input_watershed_initial_abstraction_coefficient : rasterreader, optional
         Raster with hydrologic coefficient (Manning n or runoff C) for watersheds.
-    input_bluespot_coefficient : rasterreader, optional
-        Raster with hydrologic coefficient (Manning n or runoff C) for bluespots.
     input_drainage : vectorreader, optional
         Drainage stats per bluespot (output of bluespot_drainage_io),
         indexed by bspot_id. Attaches drain_volumes and drain_capacity_curve
@@ -50,8 +54,8 @@ class StreamTool(object):
     """
 
     def __init__(self, input_pourpoints, input_bluespots, input_flowdir,
-                 output_nodes, output_streams=None, infiltration_method='none',
-                 input_watershed_infiltration_coefficient=None, input_bluespot_infiltration_coefficient=None,
+                 output_nodes, output_streams=None, initial_abstraction_method='none',
+                 input_watershed_initial_abstraction_coefficient=None,
                  input_drainage=None):
         self.input_pourpoints = input_pourpoints
         self.input_bluespots = input_bluespots
@@ -59,9 +63,8 @@ class StreamTool(object):
 
         self.output_nodes = output_nodes
         self.output_streams = output_streams
-        self.infiltration_method = infiltration_method
-        self.input_watershed_infiltration_coefficient = input_watershed_infiltration_coefficient
-        self.input_bluespot_infiltration_coefficient = input_bluespot_infiltration_coefficient
+        self.initial_abstraction_method = initial_abstraction_method
+        self.input_watershed_initial_abstraction_coefficient = input_watershed_initial_abstraction_coefficient
         self.input_drainage = input_drainage
 
         self.logger = logging.getLogger(__name__)
@@ -83,9 +86,11 @@ class StreamTool(object):
         labeled_bluespots = self.input_bluespots.read()
         pourpoints = self.input_pourpoints.read_geojson_features()
 
-        # Read coefficient raster if provided (Manning n or runoff C, depending on infiltration_method)
-        watershed_infiltration_coefficient = self.input_watershed_infiltration_coefficient.read() if self.input_watershed_infiltration_coefficient else None
-        bluespot_infiltration_coefficient = self.input_bluespot_infiltration_coefficient.read() if self.input_bluespot_infiltration_coefficient else None
+        # Added by Oriane Strouk (2026).
+        # ------------------------------
+
+        # Read coefficient raster if provided (Runoff coefficient or Curve Number, depending on initial_abstraction_method)
+        watershed_initial_abstraction_coefficient = self.input_watershed_initial_abstraction_coefficient.read() if self.input_watershed_initial_abstraction_coefficient else None
 
         # Index drainage stats by bspot_id for quick lookup
         drainage_index = {}
@@ -94,6 +99,9 @@ class StreamTool(object):
                 bsid = f['properties'].get('bspot_id')
                 if bsid is not None:
                     drainage_index[bsid] = f['properties']
+        
+        # End of added by Oriane Strouk (2026).
+        # -------------------------------------
 
         pourpoints_pix = [(pp['properties']['cell_row'], pp['properties']['cell_col']) for pp in pourpoints]
 
@@ -120,9 +128,7 @@ class StreamTool(object):
             props['bspot_area'] = 0.0
             props['bspot_vol'] = 0.0
             props['wshed_area'] = 0.0
-            props['infiltration_method'] = self.infiltration_method
-            props['wshed_infiltration_coefficient'] = 0.0  # default value
-            props['bspot_infiltration_coefficient'] = 0.0  # default value
+            props['ia_method'] = self.initial_abstraction_method
 
             # Copy info from pourpoint if present
             ppoint = pp_index.get(n['id'], None)
@@ -132,15 +138,18 @@ class StreamTool(object):
                 props['bspot_vol'] = ppoint['properties']['bspot_vol']
                 props['wshed_area'] = ppoint['properties']['wshed_area']
 
+            # Added by Oriane Strouk (2026).
+            # ------------------------------
+
             # Read coefficient value at the pourpoint pixel
-            if watershed_infiltration_coefficient is not None:
+            if watershed_initial_abstraction_coefficient is not None:
                 row = props['cell_row']
                 col = props['cell_col']
-                props['wshed_infiltration_coefficient'] = float(watershed_infiltration_coefficient[row, col])
-            if bluespot_infiltration_coefficient is not None:
-                row = props['cell_row']
-                col = props['cell_col']
-                props['bspot_infiltration_coefficient'] = float(bluespot_infiltration_coefficient[row, col])
+                cn_value = watershed_initial_abstraction_coefficient[row, col]
+                if np.isnan(cn_value):
+                    props['wshed_ia_coeff'] = None
+                else:
+                    props['wshed_ia_coeff'] = float(cn_value)
 
              # Attach drainage curve if available for this bluespot
             bsid = props['bspot_id']
@@ -148,6 +157,9 @@ class StreamTool(object):
                 drain_props = drainage_index[bsid]
                 props['drain_volumes'] = drain_props.get('drain_volumes', '')
                 props['drain_capacity_curve'] = drain_props.get('drain_capacity_curve', '')
+
+            # End of added by Oriane Strouk (2026).
+            # -------------------------------------
 
             # Geometry
             coord = transform_cell_to_world(n['pix'], transform)

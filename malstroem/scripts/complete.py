@@ -11,13 +11,50 @@
 # You should have received a copy of the GNU General Public License along with this program. If not,
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------------------------
+# Modified to add additional optional hydrologic processing developed by Oriane Strouk (2026).
+#
+# Initial abstraction
+# -------------------
+# Initial abstraction before runoff generation can be accounted for at the watershed scale by
+# providing a landuse raster. Two initial abstraction methods are currently implemented:
+#   - Runoff Coefficient (Rational Method)
+#   - SCS Curve Number
+#
+# A hydrologic coefficient is computed for each watershed from the landuse raster and propagated
+# through the runoff network. It is then used when converting the input rainfall into the effective
+# runoff volume entering each bluespot. Landuse codes must correspond to the lookup tables provided
+# in tests/data/{initial_abstraction_method}_lookup.txt. Uncertainty can be evaluated by selecting one of
+# the available coefficient scenarios:
+#   - lower_bound
+#   - default_value
+#   - upper_bound
+#
+# Drainage
+# --------
+# Bluespot drainage can be simulated by providing a vector layer of sump locations with a
+# "capacity" attribute (m³/s). The drainage calculation uses the bluespot hypsometry to derive
+# drainage capacity curves. The simulation duration can be controlled with "simulation_duration_s".
+#
+# The "allow_initial_spillover" option controls how water exceeding the bluespot storage capacity
+# is handled:
+#   - True: excess water spills immediately and cannot be drained (conservative flash-flood
+#     assumption, suitable for intense rainfall events).
+#   - False: excess water may be drained according to the drainage capacity curve (continuous
+#     mass-balance assumption, suitable for lower flows).
+#
+# Since drainage relies on the hypsometric curves, the hypsometry calculation is performed before
+# the drainage step in the processing workflow.
+# -------------------------------------------------------------------------------------------------
+
 from __future__ import (absolute_import, division, print_function) #, unicode_literals)
 from builtins import *
 
 import click
 import click_log
 
-from malstroem import dem as demtool, bluespots, io, streams, rain as raintool, network, hyps, approx
+from malstroem import dem as demtool, bluespots, hydrology, io, streams, rain as raintool, network, hyps, approx
 from malstroem.drainage import bluespot_drainage_io
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
@@ -37,18 +74,28 @@ logger = logging.getLogger(__name__)
 @click.option('-vector', is_flag=True, help='Vectorize bluespots and watersheds')
 @click.option('-filter', help='Filter bluespots by area, maximum depth and volume. Format: '
                                '"area > 20.5 and (maxdepth > 0.05 or volume > 2.5)"')
+
+# New options added by Oriane Strouk (2026) related to initial abstraction
+# ------------------------------------------------------------------------
 @click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing COTQ land use codes')
-@click.option('-infiltration_method',
-              type=click.Choice(['none', 'manning', 'runoff_coefficient'], case_sensitive=False),
+@click.option('-initial_abstraction_method',
+              type=click.Choice(['none', 'runoff_coefficient', 'curve_number'], case_sensitive=False),
               default='none',
-              help='Method used to account for infiltration. "none" means no infiltration, "manning" means using Manning roughness coefficients, and "runoff_coefficient" means using runoff coefficients C for the Rational Method.')
+              help='Method used to account for initial abstraction. "none" means no initial abstraction, "runoff_coefficient" means using runoff coefficients C for the Rational Method and "curve_number" means using the SCS Curve Number method.')
+@click.option('-scenario',
+              type=click.Choice(['lower_bound', 'default_value', 'upper_bound'], case_sensitive=False),
+              default='default_value',
+              help='Uncertainty scenario used to select coefficient values from the lookup table.')
+
+# New options added by Oriane Strouk (2026) related to drainage
+# ------------------------------------------------------------- 
 @click.option('-sumps', type=click.Path(exists=True), help='Sump point vector file with a flow capacity attribute')
 @click.option('-simulation_duration_s', type=float, default=3600.0, show_default=True, help='Duration of the rain event in seconds.')
 @click.option('-allow_initial_spillover', type=click.Choice(['YES', 'NO'], case_sensitive=False), default='YES', help='Instantly spill over water volumes exceeding the bluespot max capacity before drainage calculations.')
 
 @click_log.simple_verbosity_option()
 
-def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, infiltration_method, sumps, simulation_duration_s, allow_initial_spillover):
+def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, initial_abstraction_method, scenario, sumps, simulation_duration_s, allow_initial_spillover):
     """Quick option to run all processes.
 
     \b
@@ -60,9 +107,12 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
         logger.error("outdir isn't an empty directory")
         return 1
     
-    # Check that landuse is provided if infiltration method is initial abstraction watershed
-    if infiltration_method.lower() != "none" and not landuse:
-        logger.error("landuse must be provided when using infiltration method: {}".format(infiltration_method))
+    # Checks and utilities added by Oriane Strouk (2026)
+    # --------------------------------------------------
+
+    # Check that landuse is provided if initial abstraction method is used
+    if initial_abstraction_method.lower() != "none" and not landuse:
+        logger.error("landuse must be provided when using initial abstraction method: {}".format(initial_abstraction_method))
         return 1
 
     # Check if explicitly requested (YES or NO) sumps must be active
@@ -80,6 +130,9 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
 
     # Convert to python boolean
     initial_spillover_bool = (allow_initial_spillover.upper() == 'YES')
+
+    # End of checks and utilities added by Oriane Strouk (2026)
+    # ---------------------------------------------------------
 
     outvector = os.path.join(outdir, 'malstroem.gpkg')
     ogr_drv = 'gpkg'
@@ -101,8 +154,9 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     logger.info('   accum: {}'.format(accum))
     logger.info('   filter: {}'.format(filter))
     logger.info('   landuse: {}'.format(landuse))
+    logger.info('   initial_abstraction_method: {}'.format(initial_abstraction_method))
+    logger.info('   scenario: {}'.format(scenario))
     logger.info('   sumps: {}'.format(sumps))
-    logger.info('   infiltration_method: {}'.format(infiltration_method))
     logger.info('   simulation_duration_s: {}s'.format(simulation_duration_s))
     logger.info('   allow_initial_spillover: {}'.format(allow_initial_spillover))
     # Process DEM
@@ -138,33 +192,36 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     )
     bluespot_tool.process()
 
-    if infiltration_method.lower() != "none":
-        logger.info("Calculating {} rasters from landuse".format(infiltration_method))
+    # Added by Oriane Strouk (2026).
+    # ------------------------------
+    # Process initial abstraction if requested
+    if initial_abstraction_method.lower() != "none":
+        logger.info("Calculating {} rasters from landuse".format(initial_abstraction_method))
         landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
-        bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
         watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
 
-        bluespot_infiltration_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'bluespot_{}.tif'.format(infiltration_method)), tr, crs, 0)
-        watershed_infiltration_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'watershed_{}.tif'.format(infiltration_method)), tr, crs, 0)
+        watershed_initial_abstraction_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'watershed_{}.tif'.format(initial_abstraction_method)), tr, crs, 0)
 
-        hydrologic_tool = bluespots.HydrologicCoefficientTool(
-            infiltration_method=infiltration_method,
+        hydrologic_tool = hydrology.HydrologicCoefficientTool(
+            initial_abstraction_method=initial_abstraction_method,
+            scenario=scenario,
             input_landuse=landuse_reader,
-            input_bluespot_labels=bluespot_labels_reader,
             input_watershed_labels=watershed_labels_reader,
-            coefficient_map=bluespots.COTQ_landuse_runoff_map() if infiltration_method == "runoff_coefficient" else bluespots.COTQ_landuse_manning_map(),
-            output_bluespot_raster=bluespot_infiltration_coefficient_writer,
-            output_watershed_raster=watershed_infiltration_coefficient_writer
+            output_watershed_raster=watershed_initial_abstraction_coefficient_writer
         )
         hydrologic_tool.process()
 
-    # Hypsometry (moved earlier, needed by drainage)
+    # Moved earlier by Oriane Strouk (2026), needed by drainage.
+    # ----------------------------------------------------------
+    # Hypsometry
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
     pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
     hyps_writer = io.VectorWriter(ogr_drv, outvector, "hypsometry", None, ogr.wkbNone, dem_reader.crs)
     hyps.bluespot_hypsometry_io(bluespot_reader, dem_reader, pourpoints_reader, zresolution, hyps_writer)
 
-# Drainage (sumps only)
+    # Added by Oriane Strouk (2026).
+    # ------------------------------
+    # Process drainage if requested
     drainage_reader = None
     if sumps:
         logger.info("Calculating drainage capacity from sumps")
@@ -185,12 +242,13 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
         )
         drainage_reader = io.VectorReader(outvector, "drainage")
 
+    # Modified by Oriane Strouk (2026) to include initial abstraction and drainage in the stream network processing.
+    # --------------------------------------------------------------------------------------------------------------
     # Process pourpoints
     pourpoints_reader = io.VectorReader(outvector, pourpoint_writer.layername)
     bluespot_reader = io.RasterReader(labeled_writer.filepath)
     flowdir_reader = io.RasterReader(flowdir_writer.filepath)
-    watershed_infiltration_coefficient_reader = io.RasterReader(watershed_infiltration_coefficient_writer.filepath) if infiltration_method.lower() != "none" else None
-    bluespot_infiltration_coefficient_reader = io.RasterReader(bluespot_infiltration_coefficient_writer.filepath) if infiltration_method.lower() != "none" else None
+    watershed_initial_abstraction_coefficient_reader = io.RasterReader(watershed_initial_abstraction_coefficient_writer.filepath) if initial_abstraction_method.lower() != "none" else None
 
     nodes_writer = io.VectorWriter(ogr_drv, outvector, 'nodes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)
     streams_writer = io.VectorWriter(ogr_drv, outvector, 'streams', None, ogr.wkbLineString, crs, dsco=ogr_dsco, lco = ogr_lco)
@@ -201,19 +259,22 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
         input_flowdir=flowdir_reader,
         output_nodes=nodes_writer,
         output_streams=streams_writer,
-        infiltration_method=infiltration_method,
-        input_watershed_infiltration_coefficient=watershed_infiltration_coefficient_reader,
-        input_bluespot_infiltration_coefficient=bluespot_infiltration_coefficient_reader,
+        initial_abstraction_method=initial_abstraction_method,
+        input_watershed_initial_abstraction_coefficient=watershed_initial_abstraction_coefficient_reader,
         input_drainage=drainage_reader
     )
     stream_tool.process()
 
+    # Modified by Oriane Strouk (2026) to account for the effective runoff volume entering each bluespot due to initial abstraction.
+    # ------------------------------------------------------------------------------------------------------------------------------
     # Calculate volumes
     nodes_reader = io.VectorReader(outvector, nodes_writer.layername)
     volumes_writer = io.VectorWriter(ogr_drv, outvector, 'initvolumes', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco) 
-    rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, "inputv" ,mm ,infiltration_method)
+    rain_tool = raintool.SimpleVolumeTool(nodes_reader, volumes_writer, "inputv" ,mm ,initial_abstraction_method)
     rain_tool.process()
 
+    # Modified by Oriane Strouk (2026) to account for drainage in bluespots in the final state calculation.
+    # -----------------------------------------------------------------------------------------------------
     # Process final state
     volumes_reader = io.VectorReader(outvector, volumes_writer.layername)
     events_writer = io.VectorWriter(ogr_drv, outvector, 'finalstate', None, ogr.wkbPoint, crs, dsco=ogr_dsco, lco = ogr_lco)

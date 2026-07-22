@@ -1,6 +1,5 @@
 from click.testing import CliRunner
 
-from malstroem.bluespots import COTQ_landuse_manning_map, COTQ_landuse_runoff_map
 from malstroem.scripts.cli import cli
 from malstroem import io
 from data.fixtures import dtmfile, landusefile, sumpsfile, filledfile, flowdirnoflatsfile, depthsfile, labeledfile, wshedsfile, pourpointsfile, nodesfile, initvolsfile, finalvolsfile, hypsfile, precipraster_byte_file, precipraster_float_file
@@ -62,35 +61,51 @@ def test_complete(tmpdir):
 
     print(f"\nOutputs saved to: {output_dir}")
 
-@pytest.mark.parametrize("infiltration_method,coefficient_map_fn,output_dirname", [
-    ("manning", COTQ_landuse_manning_map, 'output_complete_with_manning'),
-    ("runoff_coefficient", COTQ_landuse_runoff_map, 'output_complete_with_runoff_coefficient'),
-])
-def test_complete_with_landuse(tmpdir, infiltration_method, coefficient_map_fn, output_dirname):
+# Test added by Oriane Strouk (2026)
+# ------------------------------
+# Test complete command with infiltration and initial abstraction methods for rainfall-runoff transformation.
+
+@pytest.mark.parametrize(
+    "initial_abstraction_method, scenario, expected_max, output_dirname",
+    [
+        ("runoff_coefficient", "lower_bound", 1.0, "output_complete_with_infiltration/runoff_lower"),
+        ("runoff_coefficient", "default_value", 1.0, "output_complete_with_infiltration/runoff_default"),
+        ("runoff_coefficient", "upper_bound", 1.0, "output_complete_with_infiltration/runoff_upper"),
+
+        ("curve_number", "lower_bound", 95, "output_complete_with_infiltration/cn_lower"),
+        ("curve_number", "default_value", 98, "output_complete_with_infiltration/cn_default"),
+        ("curve_number", "upper_bound", 98, "output_complete_with_infiltration/cn_upper"),
+    ],
+)
+def test_complete_with_infiltration(tmpdir, initial_abstraction_method, scenario,
+                               expected_max, output_dirname):
+
     output_dir = os.path.join(os.path.dirname(__file__), output_dirname)
     os.makedirs(output_dir, exist_ok=True)
 
     runner = CliRunner()
     result = runner.invoke(cli, ['complete',
-                                 '-mm', 100,
-                                 '-zresolution', 0.1,
-                                 '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
-                                 '-dem', dtmfile,
-                                 '-landuse', landusefile,
-                                 '-infiltration_method', infiltration_method,
-                                 '-outdir', str(tmpdir)])
-
+                                '-mm', 100,
+                                '-zresolution', 0.1,
+                                '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
+                                '-dem', dtmfile,
+                                '-landuse', landusefile,
+                                '-initial_abstraction_method', initial_abstraction_method,
+                                '-scenario', scenario,
+                                '-outdir', str(tmpdir)])
+    
     assert result.exit_code == 0, result.output
 
-    bluespot_raster_name = f'bluespot_{infiltration_method}.tif'
-    watershed_raster_name = f'watershed_{infiltration_method}.tif'
+    # --- Output names ---
+    watershed_raster_name = (f'watershed_{initial_abstraction_method}.tif')
 
-    # --- Copy outputs for comparison ---
+
+    # --- Copy outputs for inspection ---
     import shutil
+
     for filename in [
         'filled.tif', 'flowdir.tif', 'bs_depths.tif',
-        'bluespots.tif', 'watersheds.tif',
-        bluespot_raster_name, watershed_raster_name,
+        'bluespots.tif', 'watersheds.tif', watershed_raster_name,
         'finaldepths.tif', 'finalbluespots.tif',
         'malstroem.gpkg'
     ]:
@@ -98,20 +113,16 @@ def test_complete_with_landuse(tmpdir, infiltration_method, coefficient_map_fn, 
         if os.path.isfile(src):
             shutil.copy(src, os.path.join(output_dir, filename))
 
-    # --- Coefficient rasters should be produced ---
-    assert os.path.isfile(str(tmpdir.join(bluespot_raster_name))), \
-        f"Bluespot {infiltration_method} raster not written"
-    assert os.path.isfile(str(tmpdir.join(watershed_raster_name))), \
-        f"Watershed {infiltration_method} raster not written"
+    # --- Check coefficient raster exists ---
+    watershed_path = str(tmpdir.join(watershed_raster_name))
+    assert (os.path.isfile(watershed_path)), f"{watershed_raster_name} was not created"
 
-    bluespot_coeff = io.RasterReader(str(tmpdir.join(bluespot_raster_name))).read()
-    watershed_coeff = io.RasterReader(str(tmpdir.join(watershed_raster_name))).read()
+    watershed_coeff = io.RasterReader(watershed_path).read()
+    # --- Validate coefficient raster ---
+    assert np.nanmin(watershed_coeff) >= 0
+    assert np.nanmax(watershed_coeff) <= expected_max + 1e-10
+    assert (watershed_coeff > 0).any(), f"All watershed {initial_abstraction_method} values are zero"
 
-    max_expected = max(coefficient_map_fn().values())
-    assert bluespot_coeff.min() >= 0.0
-    assert bluespot_coeff.max() <= max_expected + 1e-10
-    assert (bluespot_coeff > 0).any(), f"All bluespot {infiltration_method} values are zero"
-    assert (watershed_coeff > 0).any(), f"All watershed {infiltration_method} values are zero"
 
     # --- Bluespots count unchanged (infiltration affects volumes, not bluespot detection) ---
     r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
@@ -123,21 +134,36 @@ def test_complete_with_landuse(tmpdir, infiltration_method, coefficient_map_fn, 
     data = v.read_geojson_features()
     assert len(data) == 544, result.output
 
-    # Read the infiltration scenario water depths raster
+    # Read the initial abstraction scenario water depths raster
     rd = io.RasterReader(str(tmpdir.join('finaldepths.tif')))
     depth_array = rd.read()
-    
+
     total_depth_sum = float(np.sum(depth_array[depth_array > 0]))
     
-    # Assert that infiltration successfully retained water, reducing total system volume
+    # Assert that initial abstraction successfully retained water, reducing total system volume
     baseline_depth_sum = 2930.395494520912
     assert total_depth_sum < baseline_depth_sum, \
-        f"Expected total water volume to decrease with infiltration, but {total_depth_sum} >= {baseline_depth_sum}"
+        f"Expected total water volume to decrease with initial abstraction, but {total_depth_sum} >= {baseline_depth_sum}"
 
     print(f"\nOutputs saved to: {output_dir}")
 
-def test_complete_with_sumps_only(tmpdir):
-    output_dir = os.path.join(os.path.dirname(__file__), 'output_complete_sumps_only')
+# End of test added by Oriane Strouk (2026)
+# -----------------------------------------
+
+# Test added by Oriane Strouk (2026)
+# ------------------------------
+# Test complete command with drainage with and without initial spillover allowed.
+
+@pytest.mark.parametrize(
+    "allow_initial_spillover, output_dirname",
+    [
+        ("YES", "output_complete_with_drainage/with_spillover"),
+        ("NO", "output_complete_with_drainage/without_spillover"),
+    ],
+)
+
+def test_complete_drainage(tmpdir, allow_initial_spillover, output_dirname):
+    output_dir = os.path.join(os.path.dirname(__file__), output_dirname)
     os.makedirs(output_dir, exist_ok=True)
     
     runner = CliRunner()
@@ -148,7 +174,7 @@ def test_complete_with_sumps_only(tmpdir):
                                  '-dem', dtmfile,
                                  '-sumps', sumpsfile,
                                  '-simulation_duration_s', 360000,
-                                 '-allow_initial_spillover', 'YES',
+                                 '-allow_initial_spillover', allow_initial_spillover,
                                  '-outdir', str(tmpdir)])
     
     assert result.exit_code == 0, result.output
@@ -233,102 +259,112 @@ def test_complete_with_sumps_only(tmpdir):
 
     print(f"\nOutputs saved to: {output_dir}")
 
-def test_complete_with_sumps_only_no_initial_spillover(tmpdir):
-    output_dir = os.path.join(os.path.dirname(__file__), 'output_complete_sumps_only')
-    os.makedirs(output_dir, exist_ok=True)
+# End of test added by Oriane Strouk (2026)
+# -----------------------------------------
+
+# # Test added by Oriane Strouk (2026)
+# # ------------------------------
+# # Test complete command with drainage without initial spillover allowed.
+
+# def test_complete_drainage_without_initial_spillover(tmpdir):
+#     output_dir = os.path.join(os.path.dirname(__file__), 'output_complete_with_drainage/without_spillover')
+#     os.makedirs(output_dir, exist_ok=True)
     
-    runner = CliRunner()
-    result = runner.invoke(cli, ['complete',
-                                 '-mm', 100,
-                                 '-zresolution', 0.1,
-                                 '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
-                                 '-dem', dtmfile,
-                                 '-sumps', sumpsfile,
-                                 '-simulation_duration_s', 360000,
-                                 '-allow_initial_spillover', 'NO',
-                                 '-outdir', str(tmpdir)])
+#     runner = CliRunner()
+#     result = runner.invoke(cli, ['complete',
+#                                  '-mm', 100,
+#                                  '-zresolution', 0.1,
+#                                  '-filter', 'area > 20.5 and maxdepth > 0.5 or volume > 2.5',
+#                                  '-dem', dtmfile,
+#                                  '-sumps', sumpsfile,
+#                                  '-simulation_duration_s', 360000,
+#                                  '-allow_initial_spillover', 'NO',
+#                                  '-outdir', str(tmpdir)])
     
-    assert result.exit_code == 0, result.output
+#     assert result.exit_code == 0, result.output
 
-    # --- Copy outputs for comparison ---
-    import shutil
-    for filename in [
-        'filled.tif', 'flowdir.tif', 'bs_depths.tif',
-        'bluespots.tif', 'watersheds.tif',
-        'finaldepths.tif', 'finalbluespots.tif',
-        'malstroem.gpkg'
-    ]:
-        src = str(tmpdir.join(filename))
-        if os.path.isfile(src):
-            shutil.copy(src, os.path.join(output_dir, filename))
+#     # --- Copy outputs for comparison ---
+#     import shutil
+#     for filename in [
+#         'filled.tif', 'flowdir.tif', 'bs_depths.tif',
+#         'bluespots.tif', 'watersheds.tif',
+#         'finaldepths.tif', 'finalbluespots.tif',
+#         'malstroem.gpkg'
+#     ]:
+#         src = str(tmpdir.join(filename))
+#         if os.path.isfile(src):
+#             shutil.copy(src, os.path.join(output_dir, filename))
 
-    # --- Base file existence assertions ---
-    assert os.path.isfile(str(tmpdir.join('filled.tif')))
+#     # --- Base file existence assertions ---
+#     assert os.path.isfile(str(tmpdir.join('filled.tif')))
 
-    # --- Raster output verifications ---
-    r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
-    data = r.read()
-    assert np.max(data) > 0, result.output 
+#     # --- Raster output verifications ---
+#     r = io.RasterReader(str(tmpdir.join('bluespots.tif')))
+#     data = r.read()
+#     assert np.max(data) > 0, result.output 
 
-    # --- Vector output verifications (finalstate and finalbluespots) ---
-    v_state = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalstate')
-    data_state = v_state.read_geojson_features()
-    assert len(data_state) > 0, result.output
+#     # --- Vector output verifications (finalstate and finalbluespots) ---
+#     v_state = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalstate')
+#     data_state = v_state.read_geojson_features()
+#     assert len(data_state) > 0, result.output
 
-    # =========================================================================
-    # === MASS CONSERVATION VERIFICATION FOR TARGET BLUESPOTS ===
-    # =========================================================================
+#     # =========================================================================
+#     # === MASS CONSERVATION VERIFICATION FOR TARGET BLUESPOTS ===
+#     # =========================================================================
 
-    # --- Set of target bluespot IDs to verify mass conservation. Some with and without sumps in them. ---
-    target_bs_ids = {32, 38, 92, 166, 173, 180, 236, 294, 298, 308, 363, 383, 486, 13, 56, 100, 142, 238, 386}
+#     # --- Set of target bluespot IDs to verify mass conservation. Some with and without sumps in them. ---
+#     target_bs_ids = {32, 38, 92, 166, 173, 180, 236, 294, 298, 308, 363, 383, 486, 13, 56, 100, 142, 238, 386}
     
-    nodes_map = {f['properties']['nodeid']: f['properties'] for f in data_state}
+#     nodes_map = {f['properties']['nodeid']: f['properties'] for f in data_state}
 
-    print("\n--- Verification of Mass Conservation ---")
-    for bs_id in target_bs_ids:
-        # --- Verify that the expected node exists within the final state outputs ---
-        assert bs_id in nodes_map, f"Missing Node {bs_id} in final state outputs."
+#     print("\n--- Verification of Mass Conservation ---")
+#     for bs_id in target_bs_ids:
+#         # --- Verify that the expected node exists within the final state outputs ---
+#         assert bs_id in nodes_map, f"Missing Node {bs_id} in final state outputs."
         
-        props = nodes_map[bs_id]
+#         props = nodes_map[bs_id]
         
-        # --- Extract and parse inflow volumes ---
-        inputv = float(props.get('inputv', 0.0))
-        upstreamv = float(props.get('upstreamv', 0.0))
-        total_in = inputv + upstreamv
+#         # --- Extract and parse inflow volumes ---
+#         inputv = float(props.get('inputv', 0.0))
+#         upstreamv = float(props.get('upstreamv', 0.0))
+#         total_in = inputv + upstreamv
 
-        # --- Extract and parse storage and outflow volumes ---
-        v = float(props.get('v', 0.0))
-        spillv = float(props.get('spillv', 0.0))
+#         # --- Extract and parse storage and outflow volumes ---
+#         v = float(props.get('v', 0.0))
+#         spillv = float(props.get('spillv', 0.0))
         
-        # --- Parse and sum up the pipe-separated drainv history string (e.g., "150.23|45.10" or "0.0") ---
-        drainv_str = props.get('drainv', '0.0')
-        if drainv_str and drainv_str != '0.0':
-            sum_drainv = sum(float(x) for x in drainv_str.split('|'))
-        else:
-            sum_drainv = 0.0
+#         # --- Parse and sum up the pipe-separated drainv history string (e.g., "150.23|45.10" or "0.0") ---
+#         drainv_str = props.get('drainv', '0.0')
+#         if drainv_str and drainv_str != '0.0':
+#             sum_drainv = sum(float(x) for x in drainv_str.split('|'))
+#         else:
+#             sum_drainv = 0.0
             
-        total_out = spillv + sum_drainv + v
+#         total_out = spillv + sum_drainv + v
 
-        # --- Log detailed metrics to terminal for debugging purposes (visible via pytest -s) ---
-        print(f"BS {bs_id:3d} | In: {total_in:12.4f} (Input: {inputv:11.2f}, Upstream: {upstreamv:11.2f}) "
-              f"-> Out: {total_out:12.4f} (Drain: {sum_drainv:11.2f}, Stored v: {v:11.2f}, Spill: {spillv:11.2f})")
+#         # --- Log detailed metrics to terminal for debugging purposes (visible via pytest -s) ---
+#         print(f"BS {bs_id:3d} | In: {total_in:12.4f} (Input: {inputv:11.2f}, Upstream: {upstreamv:11.2f}) "
+#               f"-> Out: {total_out:12.4f} (Drain: {sum_drainv:11.2f}, Stored v: {v:11.2f}, Spill: {spillv:11.2f})")
 
-        # --- Mathematical mass conservation assertion (Using absolute tolerance of 0.05 m3 to handle string rounding artifacts) ---
-        assert np.isclose(total_in, total_out, atol=0.05), (
-            f"Mass Balance Leak detected at Bluespot {bs_id}!\n"
-            f"  Total Inflow  (inputv + upstreamv) = {total_in}\n"
-            f"  Total Outflow (spillv + drainv + v) = {total_out}\n"
-            f"  Discrepancy Volume                  = {abs(total_in - total_out)}"
-        )
-    print("-----------------------------------------\n"
-          "All targeted bluespots match perfect mass conservation!")
-    # =========================================================================
+#         # --- Mathematical mass conservation assertion (Using absolute tolerance of 0.05 m3 to handle string rounding artifacts) ---
+#         assert np.isclose(total_in, total_out, atol=0.05), (
+#             f"Mass Balance Leak detected at Bluespot {bs_id}!\n"
+#             f"  Total Inflow  (inputv + upstreamv) = {total_in}\n"
+#             f"  Total Outflow (spillv + drainv + v) = {total_out}\n"
+#             f"  Discrepancy Volume                  = {abs(total_in - total_out)}"
+#         )
+#     print("-----------------------------------------\n"
+#           "All targeted bluespots match perfect mass conservation!")
+#     # =========================================================================
 
-    v_bs = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalbluespots')
-    data_bs = v_bs.read_geojson_features()
-    assert len(data_bs) > 0, result.output
+#     v_bs = io.VectorReader(str(tmpdir.join('malstroem.gpkg')), 'finalbluespots')
+#     data_bs = v_bs.read_geojson_features()
+#     assert len(data_bs) > 0, result.output
 
-    print(f"\nOutputs saved to: {output_dir}")
+#     print(f"\nOutputs saved to: {output_dir}")
+
+# # End of test added by Oriane Strouk (2026)
+# # -----------------------------------------
 
 def test_complete_nofilter(tmpdir):
     runner = CliRunner()

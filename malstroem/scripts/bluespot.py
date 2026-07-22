@@ -11,6 +11,12 @@
 # You should have received a copy of the GNU General Public License along with this program. If not,
 # see http://www.gnu.org/licenses/.
 # -------------------------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------------------------
+# Modified by Oriane Strouk (2026) to add the derivation of watershed hydrologic coefficients from
+# landuse rasters to be used in rainfall-runoff transformation.
+# -------------------------------------------------------------------------------------------------
+
 from __future__ import (absolute_import, division, print_function)  # unicode_literals)
 from builtins import (ascii, bytes, chr, dict, filter, hex, input,
                       int, map, next, oct, open, pow, range, round,
@@ -22,7 +28,8 @@ import click
 import click_log
 
 from malstroem import io
-from malstroem.bluespots import HydrologicCoefficientTool, filterbluespots, assemble_pourpoints, COTQ_landuse_manning_map, COTQ_landuse_runoff_map
+from malstroem import hydrology
+from malstroem.bluespots import filterbluespots, assemble_pourpoints
 from malstroem.vector import vectorize_labels_file_io
 from ._utils import parse_filter
 from malstroem.algorithms import label, flow, fill
@@ -143,42 +150,47 @@ def process_pourpoints(bluespots, depths, watersheds, dem, accum, out, format, l
     feature_collection = dict(type="FeatureCollection", features=pour_points)
     pourpnt_writer.write_geojson_features(feature_collection)
 
+# Added by Oriane Strouk (2026).
+# ------------------------------
+# Derive watershed hydrologic coefficients from landuse rasters to be used in rainfall-runoff transformation.
+
 @click.command('coefficient')
-@click.option('-infiltration_method',
-              type=click.Choice(['manning', 'runoff_coefficient'], case_sensitive=False),
+@click.option('-initial_abstraction_method',
+              type=click.Choice(['runoff_coefficient', 'curve_number'], case_sensitive=False),
               required=True,
-              help='Method used to derive the hydrologic coefficient from landuse. "manning" uses Manning roughness coefficients, "runoff_coefficient" uses runoff coefficients C for the Rational Method.')
+              help='Method used to derive the hydrologic coefficient from landuse.')
+@click.option('-scenario',
+              type=click.Choice(['lower_bound', 'default_value', 'upper_bound'], case_sensitive=False),
+              default='default_value',
+              show_default=True,
+              help='Uncertainty scenario used in the lookup table.')
 @click.option('-landuse', required=True, type=click.Path(exists=True), help='Landuse raster file')
-@click.option('-bluespots', required=True, type=click.Path(exists=True), help='Bluespot label raster')
 @click.option('-watersheds', required=True, type=click.Path(exists=True), help='Watershed label raster')
-@click.option('-out_bluespot', required=True, type=click.Path(exists=False), help='Output raster for bluespot coefficient values')
 @click.option('-out_watershed', required=True, type=click.Path(exists=False), help='Output raster for watershed coefficient values')
-@click.option('-default', type=float, default=None, show_default=True, help='Default coefficient for unmapped landuse codes. If not specified, uses the method-specific default (0.025 for manning, 0.75 for runoff_coefficient)')
 @click_log.simple_verbosity_option()
-def process_coefficient(infiltration_method, landuse, bluespots, watersheds, out_bluespot, out_watershed, default):
-    """Calculate hydrologic coefficient rasters (Manning or runoff C) for bluespots and watersheds."""
-    if infiltration_method.lower() == 'manning':
-        coefficient_map = COTQ_landuse_manning_map()
-    else:
-        coefficient_map = COTQ_landuse_runoff_map()
+def process_coefficient(initial_abstraction_method, scenario, landuse, watersheds, out_watershed):
+    """Calculate hydrologic coefficient raster for watersheds."""
 
     landuse_reader = io.RasterReader(landuse)
-    bluespot_reader = io.RasterReader(bluespots)
     watershed_reader = io.RasterReader(watersheds)
 
-    bluespot_writer = io.RasterWriter(out_bluespot, bluespot_reader.transform, bluespot_reader.crs, 0)
-    watershed_writer = io.RasterWriter(out_watershed, watershed_reader.transform, watershed_reader.crs, 0)
+    watershed_writer = io.RasterWriter(out_watershed,
+                                       watershed_reader.transform,
+                                       watershed_reader.crs,
+                                       0)
 
-    tool = HydrologicCoefficientTool(
-        infiltration_method=infiltration_method,
+    tool = hydrology.HydrologicCoefficientTool(
+        initial_abstraction_method=initial_abstraction_method,
+        scenario=scenario,
         input_landuse=landuse_reader,
-        input_bluespot_labels=bluespot_reader,
         input_watershed_labels=watershed_reader,
-        coefficient_map=coefficient_map,
-        output_bluespot_raster=bluespot_writer,
         output_watershed_raster=watershed_writer
     )
+
     tool.process()
+
+# End of added by Oriane Strouk (2026).
+# ------------------------------
 
 @click.command('polys')
 @click.option('-raster', required=True, type=click.Path(exists=True), help='Raster file with IDs (bluespots or watersheds)')

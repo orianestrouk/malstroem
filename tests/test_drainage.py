@@ -38,7 +38,7 @@ def test_rasterize_sumps(tmpdir):
     pixel_width = transform[1]
     pixel_height = transform[5]
 
-    output_dir = os.path.join(os.path.dirname(__file__), 'output_drainage_test')
+    output_dir = os.path.join(os.path.dirname(__file__), 'output_rasterize_sumps')
     os.makedirs(output_dir, exist_ok=True)
 
     # --- Write sump vector directly to output_dir so it persists for inspection ---

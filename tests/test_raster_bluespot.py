@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from malstroem import bluespots, io
+from malstroem import bluespots, io, hydrology
 from malstroem.algorithms import label
 from osgeo import ogr
 import os
@@ -53,11 +53,26 @@ def test_bluespots(tmpdir):
     assert os.path.isfile(watershed_writer.filepath)
     assert os.path.isfile(labeled_writer.filepath)
 
-@pytest.mark.parametrize("infiltration_method,coefficient_map,default_value,expected_max", [
-    ("manning", bluespots.COTQ_landuse_manning_map(), 0.025, 0.4),
-    ("runoff_coefficient", bluespots.COTQ_landuse_runoff_map(), 0.75, 1.0),
-])
-def test_hydrologic_coefficient_tool(tmpdir, infiltration_method, coefficient_map, default_value, expected_max):
+# Test added by Oriane Strouk (2026)
+# ------------------------------
+# Test hydrologic coefficient derivation from landuse rasters for rainfall-runoff transformation.
+
+@pytest.mark.parametrize(
+    "initial_abstraction_method ,scenario, expected_max, expected_min, output_dirname",
+    [
+        ("runoff_coefficient", "lower_bound", 1.0, 0.0, "output_hydrocoeff/runoff_lower"),
+        ("runoff_coefficient", "default_value", 1.0, 0.0, "output_hydrocoeff/runoff_default"),
+        ("runoff_coefficient", "upper_bound", 1.0, 0.0, "output_hydrocoeff/runoff_upper"),
+
+        ("curve_number", "lower_bound", 95, 0, "output_hydrocoeff/cn_lower"),
+        ("curve_number", "default_value", 98, 0, "output_hydrocoeff/cn_default"),
+        ("curve_number", "upper_bound", 98, 0, "output_hydrocoeff/cn_upper"),
+    ],
+)
+
+def test_hydrologic_coefficient_tool(tmpdir, initial_abstraction_method, scenario,
+                                     expected_max, expected_min, output_dirname):
+
     # --- Prerequisite: run BluespotTool to get label rasters ---
     flowdir_reader = io.RasterReader(flowdirnoflatsfile)
     dem_reader = io.RasterReader(dtmfile)
@@ -85,20 +100,38 @@ def test_hydrologic_coefficient_tool(tmpdir, infiltration_method, coefficient_ma
     )
     bluespot_tool.process()
 
-    # --- Synthetic landuse: grid of patches, one COTQ code per patch ---
+    # --- 2. Synthetic landuse raster using landuse_code ---
+
     dem_array = dem_reader.read()
     rows, cols = dem_array.shape
-    cotq_codes = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # COTQ codes
 
-    n_patches = len(cotq_codes)
+
+    # codes from lookup table
+    landuse_codes = [
+        1,   # Impervious
+        2,   # Commercial centre-ville
+        3,   # Commercial banlieue
+        4,   # Maisons de banlieue
+        5,   # Maisons detachees
+        6,   # Unites jumelees
+        7,   # Maisons de ville
+        8,   # Blocs appartements
+        9,   # Industrielle legere
+        10,  # Industrielle lourde
+        11,  # Parc et cimetiere
+        12,  # Terrain de jeux
+        13,  # Champs
+    ]
+
+    n_patches = len(landuse_codes)
     patch_rows = int(np.ceil(np.sqrt(n_patches)))
     patch_cols = int(np.ceil(n_patches / patch_rows))
 
     patch_height = rows // patch_rows
     patch_width = cols // patch_cols
 
-    landuse_array = np.zeros((rows, cols), dtype=np.uint8)
-    for idx, code in enumerate(cotq_codes):
+    landuse_array = np.ones((rows, cols), dtype=np.uint8)
+    for idx, code in enumerate(landuse_codes):
         pr = idx // patch_cols
         pc = idx % patch_cols
         row_start = pr * patch_height
@@ -110,52 +143,47 @@ def test_hydrologic_coefficient_tool(tmpdir, infiltration_method, coefficient_ma
     landuse_reader = NumpyRasterReader(landuse_array, dem_reader.transform)
 
     # --- Save synthetic landuse for inspection ---
-    output_dir = os.path.join(os.path.dirname(__file__), f'output_{infiltration_method}_test')
+    output_dir = os.path.join(os.path.dirname(__file__), output_dirname)
     os.makedirs(output_dir, exist_ok=True)
 
     landuse_out = io.RasterWriter(os.path.join(output_dir, 'landuse_synthetic.tif'), dem_reader.transform, dem_reader.crs, 0)
     landuse_out.write(landuse_array)
 
     # --- HydrologicCoefficientTool ---
-    bluespot_labels_reader = io.RasterReader(labeled_writer.filepath)
     watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
 
-    bluespot_coeff_path = os.path.join(output_dir, f'bluespot_{infiltration_method}.tif')
-    watershed_coeff_path = os.path.join(output_dir, f'watershed_{infiltration_method}.tif')
+    watershed_coeff_path = os.path.join(output_dir, f'watershed_{initial_abstraction_method}_{scenario}.tif')
 
-    bluespot_coeff_writer = io.RasterWriter(bluespot_coeff_path, dem_reader.transform, dem_reader.crs, 0)
     watershed_coeff_writer = io.RasterWriter(watershed_coeff_path, dem_reader.transform, dem_reader.crs, 0)
 
-    tool = bluespots.HydrologicCoefficientTool(
-        infiltration_method=infiltration_method,
+    tool = hydrology.HydrologicCoefficientTool(
+        initial_abstraction_method=initial_abstraction_method,
+        scenario=scenario,
         input_landuse=landuse_reader,
-        input_bluespot_labels=bluespot_labels_reader,
         input_watershed_labels=watershed_labels_reader,
-        coefficient_map=coefficient_map,
-        output_bluespot_raster=bluespot_coeff_writer,
         output_watershed_raster=watershed_coeff_writer
     )
     tool.process()
 
     # --- Assertions ---
-    assert os.path.isfile(bluespot_coeff_path)
+
     assert os.path.isfile(watershed_coeff_path)
 
-    bluespot_coeff = io.RasterReader(bluespot_coeff_path).read()
     watershed_coeff = io.RasterReader(watershed_coeff_path).read()
 
-    assert bluespot_coeff.shape == dem_array.shape
     assert watershed_coeff.shape == dem_array.shape
-    assert bluespot_coeff.max() <= expected_max + 1e-10
-    assert bluespot_coeff.min() >= 0.0
-    assert (bluespot_coeff > 0).any()
+
+    assert np.nanmax(watershed_coeff) <= expected_max
+    assert np.nanmin(watershed_coeff) >= expected_min
+
     assert (watershed_coeff > 0).any()
 
-    print(f"\nOutput rasters saved to: {output_dir}")
-    print(f"  landuse_synthetic.tif           — damier de codes COTQ {cotq_codes}")
-    print(f"  bluespot_{infiltration_method}.tif   — coefficient moyen par bluespot")
-    print(f"  watershed_{infiltration_method}.tif  — coefficient moyen par watershed")
+    print(f"\nOutput saved: {watershed_coeff_path}")
+    print(f"  landuse_synthetic.tif           — damier de landuse_code  {landuse_codes}")
+    print(f"  watershed_{initial_abstraction_method}_{scenario}.tif  — coefficient moyen par watershed")
 
+# End of test added by Oriane Strouk (2026)
+# -----------------------------------------
 
 def test_filter(bspotdata, depthsdata):
     raw_bluespot_stats = label.label_stats(depthsdata, bspotdata)
