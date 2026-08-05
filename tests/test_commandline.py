@@ -55,7 +55,7 @@ def test_complete(tmpdir):
     # Calculate the total depth sum of all flooded pixels
     total_depth_sum = float(np.sum(depth_array[depth_array > 0]))
     
-    # Assert that the baseline precisely matches your QGIS measurement
+    # Assert that the baseline precisely matches QGIS measurement
     assert total_depth_sum == pytest.approx(2930.395494520912, abs=1e-3), \
         f"Expected baseline depth sum to be approx 2930.395, got {total_depth_sum}"
 
@@ -68,13 +68,13 @@ def test_complete(tmpdir):
 @pytest.mark.parametrize(
     "initial_abstraction_method, scenario, expected_max, output_dirname",
     [
-        ("runoff_coefficient", "lower_bound", 1.0, "output_complete_with_infiltration/runoff_lower"),
-        ("runoff_coefficient", "default_value", 1.0, "output_complete_with_infiltration/runoff_default"),
-        ("runoff_coefficient", "upper_bound", 1.0, "output_complete_with_infiltration/runoff_upper"),
+        ("runoff_coefficient", "lower_bound", 1.0, "output_complete_with_initial_abstraction/runoff_lower"),
+        ("runoff_coefficient", "default_value", 1.0, "output_complete_with_initial_abstraction/runoff_default"),
+        ("runoff_coefficient", "upper_bound", 1.0, "output_complete_with_initial_abstraction/runoff_upper"),
 
-        ("curve_number", "lower_bound", 95, "output_complete_with_infiltration/cn_lower"),
-        ("curve_number", "default_value", 98, "output_complete_with_infiltration/cn_default"),
-        ("curve_number", "upper_bound", 98, "output_complete_with_infiltration/cn_upper"),
+        ("curve_number", "lower_bound", 95, "output_complete_with_initial_abstraction/cn_lower"),
+        ("curve_number", "default_value", 98, "output_complete_with_initial_abstraction/cn_default"),
+        ("curve_number", "upper_bound", 98, "output_complete_with_initial_abstraction/cn_upper"),
     ],
 )
 def test_complete_with_infiltration(tmpdir, initial_abstraction_method, scenario,

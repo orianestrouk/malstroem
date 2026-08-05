@@ -197,7 +197,7 @@ def process_all(dem, outdir, accum, filter, mm, zresolution, vector, landuse, in
     # Process initial abstraction if requested
     if initial_abstraction_method.lower() != "none":
         logger.info("Calculating {} rasters from landuse".format(initial_abstraction_method))
-        landuse_reader = io.RasterReader(landuse, nodatasubst=nodatasubst)
+        landuse_reader = io.RasterReader(landuse, nodatasubst=99)
         watershed_labels_reader = io.RasterReader(watershed_writer.filepath)
 
         watershed_initial_abstraction_coefficient_writer = io.RasterWriter(os.path.join(outdir, 'watershed_{}.tif'.format(initial_abstraction_method)), tr, crs, 0)

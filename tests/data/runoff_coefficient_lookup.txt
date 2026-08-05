@@ -1,5 +1,5 @@
 landuse_code	landuse_category	lower_bound	default_value	upper_bound
-1	Impervious	1.00	1.00	1.00
+1	Impervious	0.72	0.93	0.98
 2	Commercial centre-ville	0.70	0.90	0.95
 3	Commercial banlieue	0.50	0.60	0.70
 4	Maisons de banlieue	0.25	0.35	0.40
@@ -12,3 +12,4 @@ landuse_code	landuse_category	lower_bound	default_value	upper_bound
 11	Parc et Cimetière	0.10	0.18	0.25
 12	Terrain de jeux	0.20	0.28	0.35
 13	Champs	0.10	0.25	0.30
+99	nodata	1.0	1.0	1.0

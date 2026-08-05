@@ -1,0 +1,15 @@
+name: runoff_upper
+
+location: pat # exemple : Pointe-Aux-Trembles
+
+dem: experiments/data/{location}/dtm.tif
+landuse: experiments/data/{location}/landuse.tif
+
+rainfall_mm: 100
+zresolution: 0.1
+filter: "maxdepth > 0.05"
+
+initial_abstraction_method: runoff_coefficient
+scenario: upper_bound
+
+outdir: experiments/results/{location}/{rainfall_mm}mm/ia/{initial_abstraction_method}_{scenario}

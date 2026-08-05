@@ -110,9 +110,11 @@ ENV/
 # Test outputs (generated, not source data)
 tests/output_complete/
 tests/output_complete_with_drainage/
-tests/output_complete_with_infiltration/
+tests/output_complete_with_initial_abstraction/
 tests/output_hydrocoeff/
 tests/output_rasterize_sumps/
+experiments/data
+experiments/results
 
 # QGIS projects to visualize results
 *.qgz

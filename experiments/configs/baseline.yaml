@@ -1,0 +1,11 @@
+name: baseline
+
+location: pat # exemple : Pointe-Aux-Trembles
+
+dem: experiments/data/{location}/dtm.tif
+
+rainfall_mm: 100
+zresolution: 0.1
+filter: "maxdepth > 0.05"
+
+outdir: experiments/results/{location}/{rainfall_mm}mm/baseline

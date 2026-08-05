@@ -12,3 +12,4 @@ landuse_code	landuse_category	lower_bound	default_value	upper_bound
 11 	Parc et Cimetière	60	70	75
 12 	Terrain de jeux	65	75	80
 13 	Champs	60	75	85
+99	nodata	1.0	1.0	1.0

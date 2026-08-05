@@ -1,0 +1,15 @@
+name: drainage_without_spillover
+
+location: pat # Pointe-Aux-Trembles
+
+dem: data/{location}/dtm.tif
+sumps: data/{location}/sumps.gpkg
+
+rainfall_mm: 100
+zresolution: 0.1
+filter: "maxdepth > 0.5"
+
+simulation_duration_s: 360000
+allow_initial_spillover: NO
+
+outdir: results/{location}/{rainfall_mm}mm/drainage/{simulation_duration_s}s/spillover_{allow_initial_spillover}

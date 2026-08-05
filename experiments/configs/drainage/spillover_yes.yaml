@@ -1,0 +1,15 @@
+name: drainage_with_spillover
+
+location: pat # Pointe-Aux-Trembles
+
+dem: experiments/data/{location}/dtm_processed_buildings_1m.tif
+sumps: experiments/data/{location}/sumps.gpkg
+
+rainfall_mm: 100
+zresolution: 0.1
+filter: "maxdepth > 0.5"
+
+simulation_duration_s: 360000
+allow_initial_spillover: "YES"
+
+outdir: experiments/results/{location}/{rainfall_mm}mm/drainage/{simulation_duration_s}s/spillover_{allow_initial_spillover}

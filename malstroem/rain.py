@@ -116,13 +116,13 @@ class SimpleVolumeTool(object):
             if self.infiltration_method == "none":
                 effective_rain_mm = self.rainmm
             elif self.infiltration_method == "runoff_coefficient":
-                runoff_coeff = props.get('wshed_infiltration_coefficient')
+                runoff_coeff = props.get('wshed_ia_coeff')
                 if runoff_coeff is None:
                     effective_rain_mm = self.rainmm
                 else:
                     effective_rain_mm = self.rainmm * float(runoff_coeff)
             elif self.infiltration_method == "curve_number":
-                curve_number = props.get('wshed_infiltration_coefficient')
+                curve_number = props.get('wshed_ia_coeff')
                 if curve_number is None:
                     effective_rain_mm = self.rainmm
                 else:

@@ -75,7 +75,7 @@ class RasterReader(object):
         ndarray
         """
         data = self._bnd.ReadAsArray()
-        if self.nodata and self.nodatasubst is not None:
+        if self.nodata is not None and self.nodatasubst is not None:
             mask = np.isnan(data) if np.isnan(self.nodata) else np.isclose(data, self.nodata)
             data[mask] = self.nodatasubst
         return data

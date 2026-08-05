@@ -1,0 +1,15 @@
+name: cn_lower
+
+location: pat # exemple : Pointe-Aux-Trembles
+
+dem: experiments/data/{location}/dtm_processed_buildings_1m.tif
+landuse: experiments/data/{location}/landuse_corrige.tif
+
+rainfall_mm: 100
+zresolution: 0.1
+filter: "maxdepth > 0.05"
+
+initial_abstraction_method: curve_number
+scenario: lower_bound
+
+outdir: experiments/results/{location}/{rainfall_mm}mm/ia/{initial_abstraction_method}_{scenario}
