@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 # New options added by Oriane Strouk (2026) related to initial abstraction
 # ------------------------------------------------------------------------
-@click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing COTQ land use codes')
+@click.option('-landuse', type=click.Path(exists=True), help='Landuse raster file containing integer landuse codes. Used to derive initial abstraction coefficients for each watershed.')
 @click.option('-initial_abstraction_method',
               type=click.Choice(['none', 'runoff_coefficient', 'curve_number'], case_sensitive=False),
               default='none',

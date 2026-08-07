@@ -71,8 +71,8 @@ class SimpleVolumeTool(object):
         Name of attribute which calculated water volume is written to
     rainmm : float
         Rain (in mm).
-    infiltration_method : str
-        Infiltration method.
+    initial_abstraction_method : str
+        Initial abstraction method.
 
     Attributes
     ----------
@@ -84,12 +84,12 @@ class SimpleVolumeTool(object):
         Name of attribute which calculated water volume is written to
     """
 
-    def __init__(self, input_nodes, output_volumedata, output_volume_attribute, rainmm, infiltration_method):
+    def __init__(self, input_nodes, output_volumedata, output_volume_attribute, rainmm, initial_abstraction_method):
         self.input_nodes = input_nodes
         self.output_volumedata = output_volumedata
         self.output_volume_attribute = str(output_volume_attribute)
         self.rainmm = float(rainmm)
-        self.infiltration_method = infiltration_method
+        self.initial_abstraction_method = initial_abstraction_method
         self.logger = logging.getLogger(__name__)
 
     def process(self):
@@ -111,17 +111,17 @@ class SimpleVolumeTool(object):
 
         # Added by Oriane Strouk (2026).
         # ------------------------------
-        # Compute effective rainfall based on infiltration method
+        # Compute effective rainfall based on initial abstraction method
 
-            if self.infiltration_method == "none":
+            if self.initial_abstraction_method == "none":
                 effective_rain_mm = self.rainmm
-            elif self.infiltration_method == "runoff_coefficient":
+            elif self.initial_abstraction_method == "runoff_coefficient":
                 runoff_coeff = props.get('wshed_ia_coeff')
                 if runoff_coeff is None:
                     effective_rain_mm = self.rainmm
                 else:
                     effective_rain_mm = self.rainmm * float(runoff_coeff)
-            elif self.infiltration_method == "curve_number":
+            elif self.initial_abstraction_method == "curve_number":
                 curve_number = props.get('wshed_ia_coeff')
                 if curve_number is None:
                     effective_rain_mm = self.rainmm
